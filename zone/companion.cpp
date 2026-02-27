@@ -443,12 +443,7 @@ bool Companion::AI_IdleCastCheck()
 	return AICastSpell(GetChanceToCastBySpellType(0), SpellType_Buff | SpellType_Heal | SpellType_Pet);
 }
 
-bool Companion::AICastSpell(int8 iChance, uint32 iSpellTypes)
-{
-	// Full implementation is in companion_ai.cpp
-	// This base version falls back to NPC spell AI
-	return NPC::AI_EngagedCastCheck();
-}
+// Companion::AICastSpell is implemented in companion_ai.cpp
 
 bool Companion::AIDoSpellCast(uint16 spellid, Mob* tar, int32 mana_cost,
                               uint32* oDontDoAgainBefore)
@@ -1322,13 +1317,7 @@ int8 Companion::GetChanceToCastBySpellType(uint32 spell_type)
 	}
 }
 
-bool Companion::LoadCompanionSpells()
-{
-	// Full implementation is in companion_ai.cpp (Task 7).
-	// This stub clears the list so the companion starts with no stored spells.
-	m_companion_spells.clear();
-	return true;
-}
+// Companion::LoadCompanionSpells is implemented in companion_ai.cpp
 
 void Companion::SetSpellTimeCanCast(uint16 spellid, uint32 recast_delay)
 {
