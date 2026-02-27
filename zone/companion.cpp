@@ -649,9 +649,20 @@ bool Companion::CompanionJoinClientGroup()
 	Group* g = entity_list.GetGroupByClient(owner);
 
 	if (!g) {
-		// No group exists — create one with the owner
+		// No group exists — create a new one following the Bot pattern exactly.
+		// new Group(owner) puts the owner in members[0] and sets SetGrouped(true),
+		// but does NOT send any client packets yet.
 		g = new Group(owner);
 		if (!g) {
+			return false;
+		}
+
+		// AddMember populates members[1]/membername[1] and sends OP_GroupUpdate
+		// (groupActJoin) to the owner's client so the companion appears in the
+		// group window.  This must happen before entity_list.AddGroup assigns the
+		// group ID; SendGroupJoinOOZ inside VerifyGroup is a no-op until then.
+		if (!g->AddMember(this)) {
+			delete g;
 			return false;
 		}
 
@@ -662,24 +673,47 @@ bool Companion::CompanionJoinClientGroup()
 			return false;
 		}
 
-		if (AddCompanionToGroup(this, g)) {
-			g->AddToGroup(owner);
-			database.SetGroupLeaderName(g->GetID(), owner->GetName());
-			database.RefreshGroupFromDB(owner);
-			g->SaveGroupLeaderAA();
-			LogInfo("Companion [{}] joined new group with [{}]", GetName(), owner->GetName());
-		} else {
-			g->DisbandGroup();
-			Suspend();
-			LogInfo("Companion [{}] failed to join new group — suspending", GetName());
+		database.SetGroupLeaderName(g->GetID(), owner->GetName());
+		g->SaveGroupLeaderAA();
+
+		// Notify the leader client that it is now a group leader and send
+		// the full group update — matches what AddBotToGroup does for bots.
+		if (g->GroupCount() == 2 && g->GetLeader() && g->GetLeader()->IsClient()) {
+			g->UpdateGroupAAs();
+			g->SendUpdate(groupActUpdate, g->GetLeader());
 		}
-	} else if (AddCompanionToGroup(this, owner->GetGroup())) {
-		database.RefreshGroupFromDB(owner);
-		GetGroup()->SendGroupJoinOOZ(this);
-		LogInfo("Companion [{}] joined existing group with [{}]", GetName(), owner->GetName());
+
+		g->VerifyGroup();
+		g->SendGroupJoinOOZ(this);
+
+		// DB writes — persist both the owner and the companion in group_id table.
+		g->AddToGroup(owner);
+		g->AddToGroup(this);
+		SetFollowID(owner->GetID());
+
+		LogInfo("Companion [{}] joined new group with [{}]", GetName(), owner->GetName());
 	} else {
-		Suspend();
-		LogInfo("Companion [{}] failed to join existing group — suspending", GetName());
+		// Existing group — AddMember populates the members array and sends
+		// OP_GroupUpdate to all in-zone clients so the companion appears in
+		// the group window.
+		if (g->AddMember(this)) {
+			// Send group AA and full update to the leader, then sync group state.
+			if (g->GetLeader() && g->GetLeader()->IsClient()) {
+				g->UpdateGroupAAs();
+				g->SendUpdate(groupActUpdate, g->GetLeader());
+			}
+			g->VerifyGroup();
+			g->SendGroupJoinOOZ(this);
+
+			// DB write — persist the companion in the group_id table.
+			g->AddToGroup(this);
+
+			SetFollowID(owner->GetID());
+			LogInfo("Companion [{}] joined existing group with [{}]", GetName(), owner->GetName());
+		} else {
+			Suspend();
+			LogInfo("Companion [{}] failed to join existing group — suspending", GetName());
+		}
 	}
 
 	return true;
@@ -700,6 +734,16 @@ bool Companion::AddCompanionToGroup(Companion* companion, Group* group)
 	}
 
 	if (group->AddMember(companion) && companion->GetCompanionOwner()) {
+		// Sync group AA / update and DB state, matching the Bot pattern used in
+		// AddBotToGroup + its callers.
+		if (group->GetLeader() && group->GetLeader()->IsClient()) {
+			group->UpdateGroupAAs();
+			group->SendUpdate(groupActUpdate, group->GetLeader());
+		}
+		group->VerifyGroup();
+		group->SendGroupJoinOOZ(companion);
+		group->AddToGroup(companion);
+
 		companion->SetFollowID(companion->GetCompanionOwner()->GetID());
 		return true;
 	}

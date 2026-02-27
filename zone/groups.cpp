@@ -356,10 +356,15 @@ bool Group::AddMember(Mob* new_member, std::string new_member_name, uint32 chara
 			}
 		}
 
-		Group* g = new_member->CastToClient()->GetGroup();
-		if (g) {
-			g->SendHPManaEndPacketsTo(new_member);
-			g->SendHPPacketsFrom(new_member);
+		// Only send HP/mana packets when the new member is a client — calling
+		// CastToClient() on a Bot, Companion, or other NPC subclass is UB in
+		// release builds (no _EQDEBUG null check).
+		if (new_member->IsClient()) {
+			Group* g = new_member->CastToClient()->GetGroup();
+			if (g) {
+				g->SendHPManaEndPacketsTo(new_member);
+				g->SendHPPacketsFrom(new_member);
+			}
 		}
 
 	} else {
