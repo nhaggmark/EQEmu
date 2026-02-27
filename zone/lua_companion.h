@@ -4,6 +4,8 @@
 
 #include "zone/lua_mob.h"
 
+#include <string>
+
 class Companion;
 class Lua_Client;
 class Lua_Mob;
@@ -65,6 +67,13 @@ public:
 	// Soul wipe (permanent death + ChromaDB clear signal)
 	// -------------------------------------------------------
 	void SoulWipe();
+
+	// -------------------------------------------------------
+	// Equipment listing / retrieval
+	// -------------------------------------------------------
+	void ShowEquipment(Lua_Client client);
+	void GiveSlot(Lua_Client client, std::string slot_name);
+	void GiveAll(Lua_Client client);
 };
 
 #endif // LUA_EQEMU

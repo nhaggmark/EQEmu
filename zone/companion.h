@@ -200,6 +200,11 @@ public:
 	uint32 GetEquipment(uint8 slot) const;
 	void SetEquipment(uint8 slot, uint32 item_id);
 
+	// Equipment listing / retrieval (called from Lua companion.lua)
+	void ShowEquipment(Client* client);
+	void GiveSlot(Client* client, const std::string& slot_name);
+	void GiveAll(Client* client);
+
 	// -------------------------------------------------------
 	// XP / Leveling (Task 19)
 	// -------------------------------------------------------

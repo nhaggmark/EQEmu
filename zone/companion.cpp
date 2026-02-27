@@ -1062,6 +1062,151 @@ void Companion::SetEquipment(uint8 slot, uint32 item_id)
 }
 
 // ============================================================
+// Equipment listing / retrieval
+// ============================================================
+
+// Helper: map a Lua-friendly slot name to an EQ inventory slot constant.
+// Returns SLOT_INVALID (-1) if not recognised.
+static int16 SlotNameToSlotID(const std::string& slot_name)
+{
+	// Lowercase for case-insensitive comparison
+	std::string lower = slot_name;
+	for (auto& c : lower) { c = static_cast<char>(tolower(static_cast<unsigned char>(c))); }
+
+	if (lower == "charm")                          return EQ::invslot::slotCharm;
+	if (lower == "ear1" || lower == "ear 1")       return EQ::invslot::slotEar1;
+	if (lower == "head")                           return EQ::invslot::slotHead;
+	if (lower == "face")                           return EQ::invslot::slotFace;
+	if (lower == "ear2" || lower == "ear 2")       return EQ::invslot::slotEar2;
+	if (lower == "neck")                           return EQ::invslot::slotNeck;
+	if (lower == "shoulder" || lower == "shoulders") return EQ::invslot::slotShoulders;
+	if (lower == "arms")                           return EQ::invslot::slotArms;
+	if (lower == "back")                           return EQ::invslot::slotBack;
+	if (lower == "wrist1" || lower == "wrist 1")   return EQ::invslot::slotWrist1;
+	if (lower == "wrist2" || lower == "wrist 2")   return EQ::invslot::slotWrist2;
+	if (lower == "range")                          return EQ::invslot::slotRange;
+	if (lower == "hands")                          return EQ::invslot::slotHands;
+	if (lower == "primary" || lower == "weapon" || lower == "mainhand") return EQ::invslot::slotPrimary;
+	if (lower == "secondary" || lower == "offhand") return EQ::invslot::slotSecondary;
+	if (lower == "finger1" || lower == "finger 1" || lower == "ring1") return EQ::invslot::slotFinger1;
+	if (lower == "finger2" || lower == "finger 2" || lower == "ring2") return EQ::invslot::slotFinger2;
+	if (lower == "chest" || lower == "body")       return EQ::invslot::slotChest;
+	if (lower == "legs")                           return EQ::invslot::slotLegs;
+	if (lower == "feet" || lower == "boots")       return EQ::invslot::slotFeet;
+	if (lower == "waist" || lower == "belt")       return EQ::invslot::slotWaist;
+	if (lower == "ammo")                           return EQ::invslot::slotAmmo;
+
+	return EQ::invslot::SLOT_INVALID;
+}
+
+void Companion::ShowEquipment(Client* client)
+{
+	if (!client) {
+		return;
+	}
+
+	client->Message(Chat::Yellow,
+	    "--- %s's equipment ---", GetCleanName());
+
+	bool any = false;
+	for (int slot = EQ::invslot::EQUIPMENT_BEGIN; slot <= EQ::invslot::EQUIPMENT_END; ++slot) {
+		if (m_equipment[slot] == 0) {
+			continue;
+		}
+		const EQ::ItemData* item = database.GetItem(m_equipment[slot]);
+		const char* item_name = item ? item->Name : "(unknown item)";
+		const char* slot_name = EQ::invslot::GetInvPossessionsSlotName(static_cast<int16>(slot));
+		client->Message(Chat::White, "  [%s]: %s (id: %u)",
+		    slot_name, item_name, m_equipment[slot]);
+		any = true;
+	}
+
+	if (!any) {
+		client->Message(Chat::White, "  (no equipment)");
+	}
+}
+
+void Companion::GiveSlot(Client* client, const std::string& slot_name)
+{
+	if (!client) {
+		return;
+	}
+
+	int16 slot = SlotNameToSlotID(slot_name);
+	if (slot == EQ::invslot::SLOT_INVALID) {
+		client->Message(Chat::Red,
+		    "Unknown equipment slot '%s'. Valid slots: charm, ear1, head, face, ear2, neck, "
+		    "shoulder, arms, back, wrist1, wrist2, range, hands, primary, secondary, "
+		    "finger1, finger2, chest, legs, feet, waist, ammo",
+		    slot_name.c_str());
+		return;
+	}
+
+	uint32 item_id = m_equipment[slot];
+	if (item_id == 0) {
+		const char* slot_label = EQ::invslot::GetInvPossessionsSlotName(slot);
+		client->Message(Chat::Yellow,
+		    "%s has nothing equipped in slot '%s'.", GetCleanName(), slot_label);
+		return;
+	}
+
+	// Remove from companion
+	RemoveItemFromSlot(slot);
+
+	// Give to client
+	const EQ::ItemData* item = database.GetItem(item_id);
+	const char* item_name = item ? item->Name : "(unknown item)";
+	const char* slot_label = EQ::invslot::GetInvPossessionsSlotName(slot);
+
+	client->SummonItem(item_id);
+
+	client->Message(Chat::Yellow,
+	    "%s returns %s (slot: %s) to you.",
+	    GetCleanName(), item_name, slot_label);
+
+	LogInfo("Companion [{}] gave item [{}] (slot [{}]) to client [{}]",
+	    GetName(), item_id, slot, client->GetName());
+}
+
+void Companion::GiveAll(Client* client)
+{
+	if (!client) {
+		return;
+	}
+
+	bool any = false;
+	// Iterate all equipment slots and give each occupied one to the client
+	for (int slot = EQ::invslot::EQUIPMENT_BEGIN; slot <= EQ::invslot::EQUIPMENT_END; ++slot) {
+		if (m_equipment[slot] == 0) {
+			continue;
+		}
+
+		uint32 item_id = m_equipment[slot];
+
+		// Remove from companion first (updates m_equipment, saves, sends wear change)
+		RemoveItemFromSlot(static_cast<int16>(slot));
+
+		// Give to client
+		client->SummonItem(item_id);
+
+		const EQ::ItemData* item = database.GetItem(item_id);
+		const char* item_name = item ? item->Name : "(unknown item)";
+		const char* slot_label = EQ::invslot::GetInvPossessionsSlotName(static_cast<int16>(slot));
+
+		client->Message(Chat::Yellow,
+		    "%s returns %s (%s) to you.",
+		    GetCleanName(), item_name, slot_label);
+
+		any = true;
+	}
+
+	if (!any) {
+		client->Message(Chat::Yellow,
+		    "%s has no equipment to return.", GetCleanName());
+	}
+}
+
+// ============================================================
 // XP / Leveling (Task 19)
 // ============================================================
 

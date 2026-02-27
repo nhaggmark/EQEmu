@@ -130,6 +130,28 @@ void Lua_Companion::SoulWipe()
 }
 
 // -------------------------------------------------------
+// Equipment listing / retrieval
+// -------------------------------------------------------
+
+void Lua_Companion::ShowEquipment(Lua_Client client)
+{
+	Lua_Safe_Call_Void();
+	self->ShowEquipment(client);
+}
+
+void Lua_Companion::GiveSlot(Lua_Client client, std::string slot_name)
+{
+	Lua_Safe_Call_Void();
+	self->GiveSlot(client, slot_name);
+}
+
+void Lua_Companion::GiveAll(Lua_Client client)
+{
+	Lua_Safe_Call_Void();
+	self->GiveAll(client);
+}
+
+// -------------------------------------------------------
 // Registration
 // -------------------------------------------------------
 
@@ -146,8 +168,11 @@ luabind::scope lua_register_companion() {
 	.def("GetRecruitedLevel",      &Lua_Companion::GetRecruitedLevel)
 	.def("GetRecruitedNPCTypeID",  &Lua_Companion::GetRecruitedNPCTypeID)
 	.def("GetStance",              &Lua_Companion::GetStance)
+	.def("GiveAll",                &Lua_Companion::GiveAll)
+	.def("GiveSlot",               &Lua_Companion::GiveSlot)
 	.def("Save",                   &Lua_Companion::Save)
 	.def("SetStance",              &Lua_Companion::SetStance)
+	.def("ShowEquipment",          &Lua_Companion::ShowEquipment)
 	.def("SoulWipe",               &Lua_Companion::SoulWipe)
 	.def("Suspend",                &Lua_Companion::Suspend)
 	.def("Unsuspend",              &Lua_Companion::Unsuspend);
