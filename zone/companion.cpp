@@ -1663,6 +1663,13 @@ void Client::SpawnCompanionsOnZone()
 
 		entity_list.AddCompanion(companion);
 
+		// Start NPC AI (also loads the companion spell list for this level/class).
+		companion->AI_Start();
+
+		// Rejoin the owner's group. The owner may not be in a group yet at
+		// zone-in — CompanionJoinClientGroup creates one when needed.
+		companion->CompanionJoinClientGroup();
+
 		LogInfo(
 			"SpawnCompanionsOnZone: spawned companion '{}' (id {}) for player '{}'",
 			cd.name, cd.id, GetName()

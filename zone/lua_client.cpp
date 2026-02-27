@@ -3643,10 +3643,42 @@ Lua_Companion Lua_Client::CreateCompanion(Lua_NPC npc_lua)
 	if (!npc) {
 		return Lua_Companion(nullptr);
 	}
+
 	Companion* companion = Companion::CreateFromNPC(self, npc);
-	if (companion) {
-		entity_list.AddCompanion(companion);
+	if (!companion) {
+		return Lua_Companion(nullptr);
 	}
+
+	// Add to entity list and send spawn packet immediately (dont_queue = true so
+	// the companion appears in the world right away, not on the next spawn tick).
+	entity_list.AddCompanion(companion, true, true);
+
+	// Persist to companion_data. For fresh recruitment this does an INSERT and
+	// sets m_companion_id. For re-recruitment CreateFromNPC already called Load()
+	// so this does an UPDATE. Either way the record must exist before group join
+	// or equipment/buff operations are attempted.
+	if (!companion->Save()) {
+		LogError("CreateCompanion: Save() failed for [{}] owner [{}]",
+		         companion->GetName(), self->GetName());
+		companion->Depop();
+		return Lua_Companion(nullptr);
+	}
+
+	// Start the NPC AI so the companion acts in combat, follows the owner,
+	// and casts spells. LoadCompanionSpells() is called inside AI_Start().
+	companion->AI_Start();
+
+	// Add companion to the owner's group (creates a new group if the owner
+	// is not already in one). Sets follow ID so the companion trails the owner.
+	companion->CompanionJoinClientGroup();
+
+	// Depop the source NPC and start its respawn timer so the spawn point
+	// eventually re-populates with a new NPC.
+	npc->Depop(true);
+
+	LogInfo("CreateCompanion: companion [{}] spawned and joined group for owner [{}]",
+	        companion->GetName(), self->GetName());
+
 	return Lua_Companion(companion);
 }
 
