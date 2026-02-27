@@ -114,6 +114,36 @@ public:
 	virtual bool AIDoSpellCast(uint16 spellid, Mob* tar, int32 mana_cost,
 	                           uint32* oDontDoAgainBefore = nullptr);
 
+	// -------------------------------------------------------
+	// Class-specific AI handlers (implemented in companion_ai.cpp)
+	// -------------------------------------------------------
+	bool AI_Tank(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Paladin(uint32 iSpellTypes, bool is_defensive);
+	bool AI_ShadowKnight(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Cleric(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Druid(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Shaman(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Rogue(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Monk(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Ranger(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Beastlord(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Wizard(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Magician(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Necromancer(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Enchanter(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Bard(uint32 iSpellTypes, bool is_defensive);
+	bool AI_Generic(uint32 iSpellTypes, bool is_defensive);
+
+	// Shared spell selection helpers (companion_ai.cpp)
+	bool AI_HealGroupMember(bool engaged);
+	bool AI_BuffGroupMember();
+	bool AI_CureGroupMember();
+	bool AI_NukeTarget(uint32 nuke_types);
+	bool AI_SlowDebuff(Mob* target);
+	bool AI_MezTarget();
+	bool AI_SummonPet();
+	bool AI_InCombatBuff();
+
 	virtual void FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho) override;
 
 	// -------------------------------------------------------

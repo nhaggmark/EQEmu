@@ -23,6 +23,7 @@
 #include "common/rulesys.h"
 #include "common/strings.h"
 #include "zone/bot.h"
+#include "zone/companion.h"
 #include "zone/client.h"
 #include "zone/groups.h"
 #include "zone/lua_parser.h"
@@ -1179,6 +1180,16 @@ void Group::SplitExp(ExpSource exp_source, const uint64 exp, Mob* other) {
 				const uint64 tmp2 = group_experience / member_count;
 				m->CastToClient()->AddEXP(exp_source, tmp < tmp2 ? tmp : tmp2, consider_level, false, other->CastToNPC());
 			}
+		}
+	}
+
+	// Task 22: record kill on all companion group members.
+	// Companions don't receive XP through AddEXP; they track kills
+	// separately for history purposes.  The XP share to companions
+	// is handled by AddExperience() called from client.cpp on kill.
+	for (const auto& m : members) {
+		if (m && m->IsCompanion()) {
+			m->CastToCompanion()->RecordKill(other->GetNPCTypeID());
 		}
 	}
 }

@@ -15,6 +15,7 @@ set(zone_sources
     bot_raid.cpp
     botspellsai.cpp
     companion.cpp
+    companion_ai.cpp
     cheat_manager.cpp
     cli/cli_benchmark_databuckets.cpp
     cli/cli_sidecar_serve_http.cpp
