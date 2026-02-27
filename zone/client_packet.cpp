@@ -1234,6 +1234,8 @@ void Client::Handle_Connect_OP_WorldObjectsSent(const EQApplicationPacket *app)
 		SpawnMercOnZone();
 	}
 
+	SpawnCompanionsOnZone();
+
 	return;
 }
 

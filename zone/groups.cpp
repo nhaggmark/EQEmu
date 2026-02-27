@@ -18,6 +18,7 @@
 
 #include "groups.h"
 
+#include "companion.h"
 #include "common/eqemu_logsys.h"
 #include "common/events/player_event_logs.h"
 #include "common/repositories/character_expedition_lockouts_repository.h"
@@ -233,6 +234,24 @@ bool Group::AddMember(Mob* new_member, std::string new_member_name, uint32 chara
 
 	if (GroupCount() >= MAX_GROUP_MEMBERS) { //Sanity check for merging groups together.
 		return false;
+	}
+
+	// If the group is at capacity - 1 and the incoming member is a player (not a companion),
+	// auto-dismiss any companion occupying a slot to make room for human players.
+	if (GroupCount() == MAX_GROUP_MEMBERS - 1 && new_member && new_member->IsClient()) {
+		if (RuleB(Companions, CompanionsEnabled)) {
+			for (int slot_id = 0; slot_id < MAX_GROUP_MEMBERS; ++slot_id) {
+				if (members[slot_id] && members[slot_id]->IsCompanion()) {
+					auto* companion = members[slot_id]->CastToCompanion();
+					LogInfo(
+						"Group::AddMember: auto-dismissing companion [{}] to make room for player [{}]",
+						companion->GetName(), new_member->GetCleanName()
+					);
+					companion->Suspend();
+					break; // only dismiss one; loop is needed if future max changes
+				}
+			}
+		}
 	}
 
 	if (!new_member) {

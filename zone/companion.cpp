@@ -1341,3 +1341,80 @@ std::vector<Companion*> EntityList::GetCompanionsByOwnerCharacterID(uint32 chara
 	}
 	return result;
 }
+
+// ============================================================
+// Client::SpawnCompanionsOnZone
+// Called from client_packet.cpp when a player completes zone-in.
+// Loads all non-dismissed, non-suspended companion records for this
+// player and spawns each one near the player's current position.
+// Mirrors the Merc pattern (SpawnMercOnZone) and Bot pattern
+// (Bot::LoadAndSpawnAllZonedBots) for lifecycle consistency.
+// ============================================================
+
+void Client::SpawnCompanionsOnZone()
+{
+	if (!RuleB(Companions, CompanionsEnabled)) {
+		return;
+	}
+
+	uint32 char_id = CharacterID();
+
+	// Load all active (non-dismissed) companion records for this player
+	auto companion_records = CompanionDataRepository::GetWhere(
+		database,
+		fmt::format("owner_id = {} AND is_dismissed = 0", char_id)
+	);
+
+	if (companion_records.empty()) {
+		return;
+	}
+
+	glm::vec4 owner_pos = GetPosition();
+
+	for (auto& cd : companion_records) {
+		// Skip suspended companions — they exist in DB but are not spawned
+		if (cd.is_suspended) {
+			continue;
+		}
+
+		// Load the source NPC type for this companion
+		auto* npc_type = database.LoadNPCTypesData(cd.npc_type_id);
+		if (!npc_type) {
+			LogInfo(
+				"SpawnCompanionsOnZone: npc_type {} not found for companion {} (owner {})",
+				cd.npc_type_id, cd.id, char_id
+			);
+			continue;
+		}
+
+		// Spawn near the player, offset so they don't stack
+		float spawn_x = owner_pos.x + 5.0f;
+		float spawn_y = owner_pos.y;
+		float spawn_z = owner_pos.z;
+		float spawn_h = owner_pos.w;
+
+		auto* companion = new Companion(
+			npc_type,
+			spawn_x, spawn_y, spawn_z, spawn_h,
+			char_id,
+			cd.companion_type
+		);
+
+		// Restore saved state (HP, mana, XP, stance, etc.) from DB record
+		if (!companion->Load(cd.id)) {
+			LogError(
+				"SpawnCompanionsOnZone: Load() failed for companion id {} (owner {})",
+				cd.id, char_id
+			);
+			delete companion;
+			continue;
+		}
+
+		entity_list.AddCompanion(companion);
+
+		LogInfo(
+			"SpawnCompanionsOnZone: spawned companion '{}' (id {}) for player '{}'",
+			cd.name, cd.id, GetName()
+		);
+	}
+}

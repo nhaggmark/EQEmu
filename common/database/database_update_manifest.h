@@ -7190,6 +7190,264 @@ ALTER TABLE `character_parcels_containers`
 )",
 		.content_schema_update = false
 	},
+	ManifestEntry{
+		.version = 9329,
+		.description = "2026_02_27_companion_core_tables.sql",
+		.check = "SHOW TABLES LIKE 'companion_data'",
+		.condition = "empty",
+		.match = "",
+		.sql = R"(
+CREATE TABLE IF NOT EXISTS companion_data (
+  id                INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  owner_id          INT UNSIGNED NOT NULL,
+  npc_type_id       INT UNSIGNED NOT NULL,
+  name              VARCHAR(64) NOT NULL DEFAULT '',
+  companion_type    TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  level             TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  class_id          TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  race_id           SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  gender            TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  zone_id           INT UNSIGNED NOT NULL DEFAULT 0,
+  x                 FLOAT NOT NULL DEFAULT 0,
+  y                 FLOAT NOT NULL DEFAULT 0,
+  z                 FLOAT NOT NULL DEFAULT 0,
+  heading           FLOAT NOT NULL DEFAULT 0,
+  cur_hp            BIGINT NOT NULL DEFAULT 0,
+  cur_mana          BIGINT NOT NULL DEFAULT 0,
+  cur_endurance     BIGINT NOT NULL DEFAULT 0,
+  is_suspended      TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  stance            TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  spawn2_id         INT UNSIGNED NOT NULL DEFAULT 0,
+  spawngroupid      INT UNSIGNED NOT NULL DEFAULT 0,
+  recruited_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  experience        BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  recruited_level   TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  is_dismissed      TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  total_kills       INT UNSIGNED NOT NULL DEFAULT 0,
+  zones_visited     TEXT NULL DEFAULT NULL,
+  time_active       INT UNSIGNED NOT NULL DEFAULT 0,
+  times_died        INT UNSIGNED NOT NULL DEFAULT 0,
+  INDEX idx_owner (owner_id),
+  INDEX idx_npc_type (npc_type_id),
+  INDEX idx_owner_active (owner_id, is_dismissed, is_suspended)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+CREATE TABLE IF NOT EXISTS companion_buffs (
+  id                INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  companion_id      INT UNSIGNED NOT NULL,
+  spell_id          INT UNSIGNED NOT NULL DEFAULT 0,
+  caster_level      TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  duration_formula  TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  ticks_remaining   INT NOT NULL DEFAULT 0,
+  dot_rune          INT NOT NULL DEFAULT 0,
+  persistent        TINYINT NOT NULL DEFAULT 0,
+  counters          INT NOT NULL DEFAULT 0,
+  num_hits          INT NOT NULL DEFAULT 0,
+  melee_rune        INT NOT NULL DEFAULT 0,
+  magic_rune        INT NOT NULL DEFAULT 0,
+  instrument_mod    INT NOT NULL DEFAULT 10,
+  buff_tics         INT NOT NULL DEFAULT 0,
+  caston_x          INT NOT NULL DEFAULT 0,
+  caston_y          INT NOT NULL DEFAULT 0,
+  caston_z          INT NOT NULL DEFAULT 0,
+  extra_di_chance   INT NOT NULL DEFAULT 0,
+  INDEX idx_companion (companion_id)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+CREATE TABLE IF NOT EXISTS companion_exclusions (
+  npc_type_id       INT UNSIGNED NOT NULL PRIMARY KEY,
+  reason            VARCHAR(255) NOT NULL DEFAULT '',
+  exclusion_type    TINYINT UNSIGNED NOT NULL DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+CREATE TABLE IF NOT EXISTS companion_culture_persuasion (
+  race_id           SMALLINT UNSIGNED NOT NULL PRIMARY KEY,
+  primary_stat      VARCHAR(16) NOT NULL DEFAULT 'CHA',
+  secondary_type    VARCHAR(16) NOT NULL DEFAULT 'faction',
+  secondary_stat    VARCHAR(16) DEFAULT NULL,
+  recruitment_type  TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  max_disposition   TINYINT UNSIGNED NOT NULL DEFAULT 4,
+  notes             VARCHAR(255) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+)",
+		.content_schema_update = false
+	},
+	ManifestEntry{
+		.version = 9330,
+		.description = "2026_02_27_companion_spell_sets_and_inventories.sql",
+		.check = "SHOW TABLES LIKE 'companion_spell_sets'",
+		.condition = "empty",
+		.match = "",
+		.sql = R"(
+CREATE TABLE IF NOT EXISTS companion_spell_sets (
+  id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  class_id        TINYINT UNSIGNED NOT NULL,
+  min_level       TINYINT UNSIGNED NOT NULL DEFAULT 1,
+  max_level       TINYINT UNSIGNED NOT NULL DEFAULT 65,
+  spell_id        INT UNSIGNED NOT NULL,
+  spell_type      INT UNSIGNED NOT NULL,
+  stance          SMALLINT NOT NULL DEFAULT 0,
+  priority        SMALLINT NOT NULL DEFAULT 0,
+  min_hp_pct      SMALLINT NOT NULL DEFAULT 0,
+  max_hp_pct      SMALLINT NOT NULL DEFAULT 100,
+  INDEX idx_class_level (class_id, min_level, max_level)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 2, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 1 AND minlevel <= 65;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 12, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 2 AND minlevel <= 65;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 11, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 3 AND minlevel <= 65;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 13, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 4 AND minlevel <= 65;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 14, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 5 AND minlevel <= 65;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 10, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 6 AND minlevel <= 65;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 6, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 7 AND minlevel <= 65;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 3, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 8 AND minlevel <= 65;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 5, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 9 AND minlevel <= 65;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 4, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 10 AND minlevel <= 65;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 8, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 11 AND minlevel <= 65;
+
+INSERT INTO companion_spell_sets (class_id, min_level, max_level, spell_id, spell_type, stance, priority, min_hp_pct, max_hp_pct)
+SELECT 15, minlevel, LEAST(maxlevel, 65), spellid, type, 0, priority, COALESCE(min_hp, 0), COALESCE(max_hp, 100)
+FROM npc_spells_entries WHERE npc_spells_id = 12 AND minlevel <= 65;
+
+CREATE TABLE IF NOT EXISTS companion_inventories (
+  id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  companion_id    INT UNSIGNED NOT NULL,
+  slot_id         SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  item_id         INT UNSIGNED NOT NULL DEFAULT 0,
+  charges         TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  aug_slot_1      INT UNSIGNED NOT NULL DEFAULT 0,
+  aug_slot_2      INT UNSIGNED NOT NULL DEFAULT 0,
+  aug_slot_3      INT UNSIGNED NOT NULL DEFAULT 0,
+  aug_slot_4      INT UNSIGNED NOT NULL DEFAULT 0,
+  aug_slot_5      INT UNSIGNED NOT NULL DEFAULT 0,
+  INDEX idx_companion (companion_id),
+  UNIQUE KEY idx_companion_slot (companion_id, slot_id)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+)",
+		.content_schema_update = false
+	},
+	ManifestEntry{
+		.version = 9331,
+		.description = "2026_02_27_companion_exclusions_seed.sql",
+		.check = "SELECT COUNT(*) FROM `companion_exclusions`",
+		.condition = "empty",
+		.match = "",
+		.sql = R"(
+INSERT IGNORE INTO companion_exclusions (npc_type_id, reason, exclusion_type)
+SELECT id, 'Banker or Merchant NPC (class 40/41)', 1
+FROM npc_types WHERE class IN (40, 41);
+
+INSERT IGNORE INTO companion_exclusions (npc_type_id, reason, exclusion_type)
+SELECT id, CONCAT('Guildmaster or trainer (class ', class, ')'), 1
+FROM npc_types WHERE class BETWEEN 20 AND 35;
+
+INSERT IGNORE INTO companion_exclusions (npc_type_id, reason, exclusion_type)
+SELECT id, 'Rare/named spawn (boss)', 1
+FROM npc_types WHERE rare_spawn = 1;
+
+INSERT IGNORE INTO companion_exclusions (npc_type_id, reason, exclusion_type)
+SELECT id, CONCAT('Non-sentient/special bodytype (', bodytype, ')'), 1
+FROM npc_types WHERE bodytype IN (11, 64, 65, 66, 67);
+
+INSERT IGNORE INTO companion_exclusions (npc_type_id, reason, exclusion_type)
+SELECT id, 'Froglok (not a recruitable civilization in Classic-Luclin era)', 1
+FROM npc_types WHERE race IN (74, 330);
+
+INSERT IGNORE INTO companion_exclusions (npc_type_id, reason, exclusion_type) VALUES
+(9018,   'Sir Lucan D''Lere — lore anchor: Freeport civil war', 0),
+(382202, 'Sir Lucan D''Lere (alt) — lore anchor: Freeport civil war', 0),
+(9147,   '#Sir Lucan D''Lere (script variant) — lore anchor', 0),
+(382244, '#Sir Lucan D''Lere (script variant alt) — lore anchor', 0),
+(466029, 'Lord Antonius Bayle — lore anchor: Qeynos moral authority', 0),
+(1068,   'Captain Tillin — lore anchor: structural city guard captain', 0),
+(466035, '#Captain Hiran Tillin (script variant) — lore anchor', 0),
+(155151, 'King Raja Kerrath — lore anchor: Vah Shir king, Grimling War', 0),
+(42019,  'High Priestess Alexandria — lore anchor: Dismal Rage theology', 0),
+(82044,  'Harbinger Glosk — lore anchor: Brood of Kotiz in Cabilis', 0),
+(73103,  'King Thex''Ka IV — lore anchor: Teir''Dal power structure', 0),
+(73112,  'The Fabled King Thex''Ka IV — lore anchor variant', 0);
+)",
+		.content_schema_update = false
+	},
+	ManifestEntry{
+		.version = 9332,
+		.description = "2026_02_27_companion_culture_seed_and_rules.sql",
+		.check = "SELECT COUNT(*) FROM `companion_culture_persuasion`",
+		.condition = "empty",
+		.match = "",
+		.sql = R"(
+INSERT IGNORE INTO companion_culture_persuasion
+  (race_id, primary_stat, secondary_type, secondary_stat, recruitment_type, max_disposition, notes)
+VALUES
+(1,   'CHA', 'faction', NULL,  0, 4, 'Human — personal magnetism and social standing; max=Eager'),
+(2,   'STR', 'level',   NULL,  0, 4, 'Barbarian — respects strength and proven power; max=Eager'),
+(3,   'CHA', 'faction', NULL,  0, 3, 'Erudite (Erudin default) — intellectual diplomacy; Paineel Lua override'),
+(4,   'CHA', 'faction', NULL,  0, 4, 'Wood Elf — nature-bond and shared cause; max=Eager'),
+(5,   'CHA', 'level',   NULL,  0, 3, 'High Elf — structured society; station and elegance; max=Restless'),
+(6,   'CHA', 'faction', NULL,  0, 4, 'Half Elf — adaptable, open to mixed allegiances; max=Eager'),
+(7,   'CHA', 'faction', 'STR', 0, 3, 'Dwarf (Kaladim) — faction + proven strength both matter; max=Restless'),
+(10,  'CHA', 'faction', NULL,  0, 4, 'Halfling (Rivervale) — community trust via reputation; max=Eager'),
+(11,  'INT', 'stat',    'CHA', 0, 3, 'Gnome (Ak''Anon) — logic + social acuity; max=Restless'),
+(130, 'CHA', 'faction', NULL,  0, 4, 'Vah Shir (Shar Vahl) — honor culture, companion-capable; max=Eager'),
+(8,   'STR', 'level',   NULL,  1, 2, 'Troll (Grobb) — follow strength; self-interest; max=Restless per PRD'),
+(9,   'STR', 'level',   NULL,  1, 2, 'Ogre (Oggok) — divine curse limits motivation; follows raw power; max=Curious'),
+(12,  'CHA', 'stat',    'INT', 1, 1, 'Dark Elf (Neriak) — social manipulation + INT; max=Content per PRD'),
+(128, 'INT', 'level',   NULL,  1, 1, 'Iksar (Cabilis) — xenophobic empire-bound; tactical alliance only; max=Content');
+
+INSERT IGNORE INTO `rule_values` (`ruleset_id`, `rule_name`, `rule_value`, `notes`) VALUES
+(1, 'Companions:CompanionsEnabled', 'true', 'Master toggle for the companion recruitment system'),
+(1, 'Companions:MaxPerPlayer', '5', 'Maximum companions a player can have active simultaneously (group slots permitting)'),
+(1, 'Companions:LevelRange', '3', 'Level range (+/-) for NPC recruitment eligibility relative to player level'),
+(1, 'Companions:BaseRecruitChance', '50', 'Base recruitment success percentage before persuasion modifiers'),
+(1, 'Companions:StatScalePct', '100', 'Global stat multiplier applied to all companions (percentage, 100 = no scaling)'),
+(1, 'Companions:SpellScalePct', '100', 'Heal and damage scaling for companion spells (percentage, 100 = no scaling)'),
+(1, 'Companions:RecruitCooldownS', '900', 'Cooldown in seconds after a failed recruitment attempt on the same NPC'),
+(1, 'Companions:DeathDespawnS', '1800', 'Seconds before an unresurrected companion auto-dismisses after death'),
+(1, 'Companions:MinFaction', '3', 'Minimum faction level required for recruitment (1=Ally, 2=Warmly, 3=Kindly)'),
+(1, 'Companions:XPContribute', 'true', 'Whether companions count in group XP split calculations'),
+(1, 'Companions:MercRetentionCheckS', '600', 'Seconds between mercenary-type companion retention checks'),
+(1, 'Companions:ReplacementSpawnDelayS', '30', 'Delay in seconds before a replacement NPC spawns at a recruited NPC vacated spawn point'),
+(1, 'Companions:XPSharePct', '50', 'Percentage of a companions XP share that actually goes to the companion (remainder to player pool)'),
+(1, 'Companions:MaxLevelOffset', '1', 'Companions level cap is player_level minus this value (e.g., 1 means companion max is player_level - 1)'),
+(1, 'Companions:ReRecruitBonus', '0.10', 'Persuasion roll bonus (as a fraction) for re-recruiting a voluntarily dismissed companion'),
+(1, 'Companions:DismissedRetentionDays', '30', 'Days a dismissed companions data is retained in the database before permanent deletion'),
+(1, 'Companions:CompanionSelfPreservePct', '0.20', 'HP percentage below which a companion-type NPC uses self-preservation behaviors (retreat, defensive stance)'),
+(1, 'Companions:MercSelfPreservePct', '0.10', 'HP percentage below which a mercenary-type companion uses self-preservation behaviors');
+)",
+		.content_schema_update = false
+	},
 // -- template; copy/paste this when you need to create a new entry
 //	ManifestEntry{
 //		.version = 9228,
