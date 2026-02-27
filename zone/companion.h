@@ -19,6 +19,7 @@
 #pragma once
 
 #include "zone/npc.h"
+#include <string>
 
 class Client;
 class Corpse;
@@ -180,9 +181,9 @@ public:
 	// -------------------------------------------------------
 	// History (Task 22)
 	// -------------------------------------------------------
-	void RecordKill(uint32 npc_type_id);
-	void RecordZoneVisit(uint32 zone_id);
-	void UpdateTimeActive(uint32 seconds);
+	void RecordKill(uint32 npc_type_id);    // call from AI kill credit path
+	void RecordZoneVisit(uint32 zone_id);  // call on zone-in; updates JSON array
+	void UpdateTimeActive();               // accumulates elapsed seconds into m_time_active
 
 	// -------------------------------------------------------
 	// Re-recruitment (Task 23)
@@ -298,7 +299,13 @@ private:
 
 	// XP tracking (Task 19)
 	uint32   m_companion_xp;          // accumulated experience
-	uint64   m_total_kills;           // history: number of kills
+
+	// History tracking (Task 22)
+	uint64      m_total_kills;        // total kills attributed to this companion
+	uint32      m_times_died;         // total deaths (not including soul wipes)
+	uint32      m_time_active;        // cumulative seconds active (unsuspended)
+	std::string m_zones_visited;      // JSON array of zone IDs visited
+	uint32      m_active_since;       // epoch seconds when last unsuspended (0 = suspended)
 
 	// Replacement NPC spawn delay timer
 	Timer    m_replacement_spawn_timer;

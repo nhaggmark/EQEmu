@@ -39,7 +39,8 @@ public:
 		uint8_t     recruited_level;
 		uint8_t     is_dismissed;
 		uint32_t    total_kills;
-		uint32_t    time_active;
+		std::string zones_visited;  // JSON array of zone IDs visited
+		uint32_t    time_active;    // cumulative seconds active
 		uint32_t    times_died;
 	};
 
@@ -74,6 +75,7 @@ public:
 		e.recruited_level = 1;
 		e.is_dismissed   = 0;
 		e.total_kills    = 0;
+		e.zones_visited  = "[]";
 		e.time_active    = 0;
 		e.times_died     = 0;
 		return e;
@@ -86,7 +88,7 @@ public:
 				"SELECT id, owner_id, npc_type_id, name, companion_type, level, class_id, race_id, "
 				"gender, zone_id, x, y, z, heading, cur_hp, cur_mana, cur_endurance, "
 				"is_suspended, stance, spawn2_id, spawngroupid, experience, recruited_level, "
-				"is_dismissed, total_kills, time_active, times_died "
+				"is_dismissed, total_kills, zones_visited, time_active, times_died "
 				"FROM companion_data WHERE id = {} LIMIT 1",
 				companion_id
 			)
@@ -124,6 +126,7 @@ public:
 		e.recruited_level = row[i++] ? static_cast<uint8_t>(strtoul(row[i-1], nullptr, 10)) : 1;
 		e.is_dismissed    = row[i++] ? static_cast<uint8_t>(strtoul(row[i-1], nullptr, 10)) : 0;
 		e.total_kills     = row[i++] ? static_cast<uint32_t>(strtoul(row[i-1], nullptr, 10)) : 0;
+		e.zones_visited   = row[i++] ? row[i-1] : "[]";
 		e.time_active     = row[i++] ? static_cast<uint32_t>(strtoul(row[i-1], nullptr, 10)) : 0;
 		e.times_died      = row[i++] ? static_cast<uint32_t>(strtoul(row[i-1], nullptr, 10)) : 0;
 		return e;
@@ -137,7 +140,7 @@ public:
 				"SELECT id, owner_id, npc_type_id, name, companion_type, level, class_id, race_id, "
 				"gender, zone_id, x, y, z, heading, cur_hp, cur_mana, cur_endurance, "
 				"is_suspended, stance, spawn2_id, spawngroupid, experience, recruited_level, "
-				"is_dismissed, total_kills, time_active, times_died "
+				"is_dismissed, total_kills, zones_visited, time_active, times_died "
 				"FROM companion_data WHERE {}",
 				where_filter
 			)
@@ -171,6 +174,7 @@ public:
 			e.recruited_level = row[i++] ? static_cast<uint8_t>(strtoul(row[i-1], nullptr, 10)) : 1;
 			e.is_dismissed    = row[i++] ? static_cast<uint8_t>(strtoul(row[i-1], nullptr, 10)) : 0;
 			e.total_kills     = row[i++] ? static_cast<uint32_t>(strtoul(row[i-1], nullptr, 10)) : 0;
+			e.zones_visited   = row[i++] ? row[i-1] : "[]";
 			e.time_active     = row[i++] ? static_cast<uint32_t>(strtoul(row[i-1], nullptr, 10)) : 0;
 			e.times_died      = row[i++] ? static_cast<uint32_t>(strtoul(row[i-1], nullptr, 10)) : 0;
 			all.push_back(e);
@@ -203,9 +207,9 @@ public:
 				"(owner_id, npc_type_id, name, companion_type, level, class_id, race_id, "
 				"gender, zone_id, x, y, z, heading, cur_hp, cur_mana, cur_endurance, "
 				"is_suspended, stance, spawn2_id, spawngroupid, experience, recruited_level, "
-				"is_dismissed, total_kills, time_active, times_died) "
+				"is_dismissed, total_kills, zones_visited, time_active, times_died) "
 				"VALUES ({}, {}, '{}', {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, "
-				"{}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+				"{}, {}, {}, {}, {}, {}, {}, {}, '{}', {}, {})",
 				e.owner_id,
 				e.npc_type_id,
 				Strings::Escape(e.name),
@@ -225,6 +229,7 @@ public:
 				e.recruited_level,
 				e.is_dismissed,
 				e.total_kills,
+				Strings::Escape(e.zones_visited),
 				e.time_active,
 				e.times_died
 			)
@@ -248,7 +253,8 @@ public:
 				"x = {}, y = {}, z = {}, heading = {}, cur_hp = {}, cur_mana = {}, "
 				"cur_endurance = {}, is_suspended = {}, stance = {}, spawn2_id = {}, "
 				"spawngroupid = {}, experience = {}, recruited_level = {}, "
-				"is_dismissed = {}, total_kills = {}, time_active = {}, times_died = {} "
+				"is_dismissed = {}, total_kills = {}, zones_visited = '{}', "
+				"time_active = {}, times_died = {} "
 				"WHERE id = {}",
 				e.owner_id,
 				e.npc_type_id,
@@ -269,6 +275,7 @@ public:
 				e.recruited_level,
 				e.is_dismissed,
 				e.total_kills,
+				Strings::Escape(e.zones_visited),
 				e.time_active,
 				e.times_died,
 				e.id

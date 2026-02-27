@@ -66,6 +66,10 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	// XP / history
 	m_companion_xp = 0;
 	m_total_kills  = 0;
+	m_times_died   = 0;
+	m_time_active  = 0;
+	m_zones_visited = "[]";
+	m_active_since = static_cast<uint32>(time(nullptr));
 
 	// Store base stats for later scaling
 	m_base_str  = d->STR;
@@ -329,6 +333,8 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 
 		// Mark companion as suspended (dead) in DB
 		SetSuspended(true);
+		m_times_died++;
+		UpdateTimeActive(); // stop accruing active time at death
 		Save();
 
 		// Start the despawn timer — if not resurrected, auto-dismiss
@@ -495,6 +501,7 @@ bool Companion::Spawn(Client* owner)
 bool Companion::Suspend()
 {
 	SetSuspended(true);
+	UpdateTimeActive(); // accrue elapsed seconds before saving
 
 	if (!Save()) {
 		LogError("Companion::Suspend: Save() failed for companion id [{}]", m_companion_id);
@@ -540,6 +547,10 @@ bool Companion::Unsuspend(bool set_max_stats)
 
 void Companion::Zone()
 {
+	UpdateTimeActive(); // accrue elapsed seconds before saving
+	if (zone) {
+		RecordZoneVisit(zone->GetZoneID());
+	}
 	Save();
 	Depop();
 }
@@ -792,7 +803,10 @@ bool Companion::Save()
 	cd.spawngroupid    = m_spawngroupid;
 	cd.experience      = m_companion_xp;
 	cd.recruited_level = m_recruited_level;
-	cd.total_kills     = m_total_kills;
+	cd.total_kills     = static_cast<uint32_t>(m_total_kills);
+	cd.zones_visited   = m_zones_visited;
+	cd.time_active     = m_time_active;
+	cd.times_died      = m_times_died;
 
 	if (m_companion_id == 0) {
 		// New companion — insert
@@ -835,6 +849,10 @@ bool Companion::Load(uint32 companion_id)
 	m_companion_xp          = static_cast<uint32>(cd.experience);
 	m_recruited_level       = cd.recruited_level;
 	m_total_kills           = cd.total_kills;
+	m_zones_visited         = cd.zones_visited.empty() ? "[]" : cd.zones_visited;
+	m_time_active           = cd.time_active;
+	m_times_died            = cd.times_died;
+	m_active_since          = static_cast<uint32>(time(nullptr));
 
 	// Restore HP/mana if not suspended at max
 	if (cd.cur_hp > 0) {
@@ -1120,22 +1138,68 @@ uint32 Companion::GetXPForNextLevel() const
 // History tracking (Task 22)
 // ============================================================
 
-void Companion::RecordKill(uint32 npc_type_id)
+void Companion::RecordKill(uint32 /*npc_type_id*/)
 {
 	m_total_kills++;
-	// Periodic save to avoid hitting DB on every kill
-	// Save() is called on zone/suspend anyway
+	// Save() is called on zone/suspend; no per-kill DB write needed
 }
 
 void Companion::RecordZoneVisit(uint32 zone_id)
 {
-	// Zone visits are implicitly tracked via companion_data.zone_id
-	// More detailed tracking would use a separate table
+	if (zone_id == 0) {
+		return;
+	}
+
+	// m_zones_visited is a JSON array: [id1, id2, ...]
+	// Append zone_id if not already present (cap at 100 entries to prevent unbounded growth)
+	const std::string id_str = std::to_string(zone_id);
+
+	// Simple string search to avoid a JSON parser dependency
+	// Format: "[" or ",id," or ",id]" or "[id]"
+	bool found = false;
+	if (m_zones_visited.find('[' + id_str + ']') != std::string::npos ||
+	    m_zones_visited.find('[' + id_str + ',') != std::string::npos ||
+	    m_zones_visited.find(',' + id_str + ',') != std::string::npos ||
+	    m_zones_visited.find(',' + id_str + ']') != std::string::npos) {
+		found = true;
+	}
+
+	if (!found) {
+		// Count existing entries (number of commas + 1, or 0 if "[]")
+		size_t entry_count = 0;
+		if (m_zones_visited.size() > 2) {
+			entry_count = std::count(m_zones_visited.begin(), m_zones_visited.end(), ',') + 1;
+		}
+
+		if (entry_count >= 100) {
+			// Drop the oldest entry (remove from front of array)
+			size_t first_comma = m_zones_visited.find(',');
+			if (first_comma != std::string::npos) {
+				m_zones_visited = '[' + m_zones_visited.substr(first_comma + 1);
+			}
+		}
+
+		// Append new zone_id
+		if (m_zones_visited == "[]") {
+			m_zones_visited = '[' + id_str + ']';
+		} else {
+			// Replace trailing ']' with ',id]'
+			m_zones_visited.back() = ',';
+			m_zones_visited += id_str + ']';
+		}
+	}
 }
 
-void Companion::UpdateTimeActive(uint32 seconds)
+void Companion::UpdateTimeActive()
 {
-	// TODO: track total time active in companion_data if field is added
+	if (m_active_since == 0) {
+		return;
+	}
+	uint32 now = static_cast<uint32>(time(nullptr));
+	if (now > m_active_since) {
+		m_time_active += (now - m_active_since);
+	}
+	m_active_since = 0; // mark as suspended
 }
 
 // ============================================================
@@ -1456,6 +1520,11 @@ void Client::SpawnCompanionsOnZone()
 			);
 			delete companion;
 			continue;
+		}
+
+		// Record this zone visit in history
+		if (zone) {
+			companion->RecordZoneVisit(zone->GetZoneID());
 		}
 
 		entity_list.AddCompanion(companion);
