@@ -37,6 +37,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "common/rulesys.h"
 #include "common/shared_tasks.h"
 #include "zone/bot.h"
+#include "zone/companion.h"
 #include "zone/dialogue_window.h"
 #include "zone/dynamic_zone.h"
 #include "zone/event_codes.h"
@@ -7298,6 +7299,66 @@ void Client::Handle_OP_GroupDisband(const EQApplicationPacket *app)
 		auto group2 = memberToDisband->GetGroup();
 		if (group2 != group) // they're not in our group!
 			memberToDisband = this;
+	}
+
+	// -----------------------------------------------------------------------
+	// Companion protection: the group IS the recruitment relationship.
+	// A player cannot fully disband while a companion is in the group.
+	//   - Explicitly kicking the companion: treat as Dismiss (say 'dismiss' path)
+	//   - Disbanding a multi-player group: eject other players, keep owner+companion
+	//   - Disbanding when only owner+companion remain: send a hint, do nothing
+	// -----------------------------------------------------------------------
+	if (RuleB(Companions, CompanionsEnabled)) {
+		// Locate any companion in this group
+		Companion* companion_in_group = nullptr;
+		for (uint32 slot_idx = 0; slot_idx < MAX_GROUP_MEMBERS; ++slot_idx) {
+			if (group->members[slot_idx] && group->members[slot_idx]->IsCompanion()) {
+				companion_in_group = group->members[slot_idx]->CastToCompanion();
+				break;
+			}
+		}
+
+		if (companion_in_group) {
+			// Case 1: leader is explicitly targeting the companion to kick them
+			if (group->IsLeader(this) && memberToDisband == companion_in_group) {
+				companion_in_group->Dismiss();
+				if (LFP)
+					UpdateLFP();
+				return;
+			}
+
+			// Case 2: only owner + companion remain — cannot disband, give hint
+			if (group->GroupCount() <= 2) {
+				Message(Chat::White,
+					"%s says 'I won't be left behind. Say \"dismiss\" if you wish to release me.'",
+					companion_in_group->GetCleanName());
+				return;
+			}
+
+			// Case 3: multi-player group — remove all non-owner, non-companion members
+			// so only owner + companion remain grouped.
+			if (group->IsLeader(this)) {
+				// Collect members to remove before modifying the array
+				std::vector<Mob*> members_to_eject;
+				for (uint32 slot_idx = 0; slot_idx < MAX_GROUP_MEMBERS; ++slot_idx) {
+					Mob* m = group->members[slot_idx];
+					if (!m)
+						continue;
+					if (m == this)
+						continue; // owner stays
+					if (m->IsCompanion())
+						continue; // companion stays
+					members_to_eject.push_back(m);
+				}
+				for (Mob* m : members_to_eject) {
+					group->DelMember(m, false);
+				}
+			}
+
+			if (LFP)
+				UpdateLFP();
+			return;
+		}
 	}
 
 	if (group->GroupCount() < 3)

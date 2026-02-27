@@ -475,6 +475,13 @@ bool Companion::Spawn(Client* owner)
 
 	m_owner_char_id = owner->CharacterID();
 
+	// Ensure the raw name field matches GetCleanName() so the spawn packet name
+	// and the group window member name are identical.  Without this the Titanium
+	// client can't associate the group window entry with the in-world entity and
+	// clicking the companion's name in the group window won't target them.
+	// This mirrors Bot::Spawn() which does the same thing (see bot.cpp:3605).
+	strcpy(name, GetCleanName());
+
 	// Add to entity list — this assigns the entity ID and sends spawn packet
 	entity_list.AddCompanion(this, true, true);
 
