@@ -7,6 +7,7 @@
 #include "zone/lua_bot.h"
 #include "zone/lua_buff.h"
 #include "zone/lua_client.h"
+#include "zone/lua_companion.h"
 #include "zone/lua_corpse.h"
 #include "zone/lua_database.h"
 #include "zone/lua_door.h"
@@ -1347,6 +1348,7 @@ void LuaParser::MapFunctions(lua_State *L) {
 			lua_register_npc(),
 			lua_register_client(),
 			lua_register_bot(),
+			lua_register_companion(),
 			lua_register_merc(),
 			lua_register_inventory(),
 			lua_register_inventory_where(),

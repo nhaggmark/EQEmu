@@ -170,6 +170,7 @@ set(zone_headers
     lua_inventory.h
     lua_item.h
     lua_iteminst.h
+    lua_companion.h
     lua_merc.h
     lua_mob.h
     lua_mod.h
@@ -252,6 +253,7 @@ set(lua_sources
     lua_inventory.cpp
     lua_item.cpp
     lua_iteminst.cpp
+    lua_companion.cpp
     lua_merc.cpp
     lua_mob.cpp
     lua_mod.cpp
