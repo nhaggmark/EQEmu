@@ -1178,6 +1178,27 @@ RULE_INT(EvolvingItems, DelayUponEquipping, 30000, "Delay in ms before an evolvi
 RULE_BOOL(EvolvingItems, DestroyAugmentsOnEvolve, false, "If this is enabled, any augments in an item will be destroyed when the item evolves. Otherwise, send augments to the player via the parcel system (requires that the Parcel System be enabled).")
 RULE_CATEGORY_END()
 
+RULE_CATEGORY(Companions)
+RULE_BOOL(Companions, CompanionsEnabled, true, "Master toggle for the companion recruitment system")
+RULE_INT(Companions, MaxPerPlayer, 5, "Maximum companions a player can have active simultaneously (group slots permitting)")
+RULE_INT(Companions, LevelRange, 3, "Level range (+/-) for NPC recruitment eligibility relative to player level")
+RULE_INT(Companions, BaseRecruitChance, 50, "Base recruitment success percentage before persuasion modifiers")
+RULE_INT(Companions, StatScalePct, 100, "Global stat multiplier applied to all companions (percentage, 100 = no scaling)")
+RULE_INT(Companions, SpellScalePct, 100, "Heal and damage scaling for companion spells (percentage, 100 = no scaling)")
+RULE_INT(Companions, RecruitCooldownS, 900, "Cooldown in seconds after a failed recruitment attempt on the same NPC")
+RULE_INT(Companions, DeathDespawnS, 1800, "Seconds before an unresurrected companion auto-dismisses after death")
+RULE_INT(Companions, MinFaction, 3, "Minimum faction level required for recruitment (1=Ally, 2=Warmly, 3=Kindly)")
+RULE_BOOL(Companions, XPContribute, true, "Whether companions count in group XP split calculations")
+RULE_INT(Companions, MercRetentionCheckS, 600, "Seconds between mercenary-type companion retention checks")
+RULE_INT(Companions, ReplacementSpawnDelayS, 30, "Delay in seconds before a replacement NPC spawns at a recruited NPC's vacated spawn point")
+RULE_INT(Companions, XPSharePct, 50, "Percentage of a companion's XP share that actually goes to the companion (remainder to player pool)")
+RULE_INT(Companions, MaxLevelOffset, 1, "Companions level cap is player_level minus this value (e.g., 1 means companion max is player_level - 1)")
+RULE_REAL(Companions, ReRecruitBonus, 0.10, "Persuasion roll bonus (as a fraction) for re-recruiting a voluntarily dismissed companion")
+RULE_INT(Companions, DismissedRetentionDays, 30, "Days a dismissed companion's data is retained in the database before permanent deletion")
+RULE_REAL(Companions, CompanionSelfPreservePct, 0.20, "HP percentage below which a companion-type NPC uses self-preservation behaviors (retreat, defensive stance)")
+RULE_REAL(Companions, MercSelfPreservePct, 0.10, "HP percentage below which a mercenary-type companion uses self-preservation behaviors")
+RULE_CATEGORY_END()
+
 #undef RULE_CATEGORY
 #undef RULE_INT
 #undef RULE_REAL

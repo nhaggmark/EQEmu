@@ -14,6 +14,7 @@ set(zone_sources
     bot_database.cpp
     bot_raid.cpp
     botspellsai.cpp
+    companion.cpp
     cheat_manager.cpp
     cli/cli_benchmark_databuckets.cpp
     cli/cli_sidecar_serve_http.cpp
@@ -127,6 +128,7 @@ set(zone_headers
     bot_command.h
     bot_database.h
     bot_structs.h
+    companion.h
     cheat_manager.h
     client.h
     client_packet.h
