@@ -129,7 +129,6 @@ Companion* Companion::CreateFromNPC(Client* owner, NPC* source_npc)
 	}
 
 	// Load the NPCType from the database for this NPC
-	// We copy the NPCType pointer from the source NPC — NPC stores it in d->
 	// We need to fetch fresh data so we have a stable copy independent of the
 	// source NPC's lifecycle. content_db.LoadNPCTypesData returns a heap-allocated NPCType.
 	const NPCType* npc_type_data = content_db.LoadNPCTypesData(source_npc->GetNPCTypeID());
@@ -138,8 +137,58 @@ Companion* Companion::CreateFromNPC(Client* owner, NPC* source_npc)
 		return nullptr;
 	}
 
-	// Create the companion at the source NPC's position
 	auto pos = source_npc->GetPosition();
+
+	// Check for an existing dismissed companion record (re-recruitment path).
+	// If the player previously dismissed this NPC voluntarily, restore its full
+	// state (level, XP, equipment, buffs) rather than starting fresh.
+	auto existing = CompanionDataRepository::GetWhere(
+		database,
+		fmt::format(
+			"owner_id = {} AND npc_type_id = {} AND is_dismissed = 1 LIMIT 1",
+			owner->CharacterID(),
+			source_npc->GetNPCTypeID()
+		)
+	);
+
+	if (!existing.empty()) {
+		// Re-recruitment: restore saved companion state
+		Companion* companion = new Companion(
+			npc_type_data,
+			pos.x, pos.y, pos.z, pos.w,
+			owner->CharacterID(),
+			existing[0].companion_type
+		);
+
+		if (!companion) {
+			return nullptr;
+		}
+
+		if (!companion->Load(existing[0].id)) {
+			LogError("Companion::CreateFromNPC: Load() failed for re-recruitment id [{}]", existing[0].id);
+			delete companion;
+			return nullptr;
+		}
+
+		// Clear dismissed flag and activate — companion is active again.
+		// is_dismissed has no C++ member; update directly to avoid Save() overwriting
+		// other fields with stale data before the companion is fully initialized.
+		companion->m_suspended = false;
+		database.QueryDatabase(
+			fmt::format(
+				"UPDATE `companion_data` SET `is_dismissed` = 0, `is_suspended` = 0 WHERE `id` = {}",
+				existing[0].id
+			)
+		);
+
+		LogInfo(
+			"Companion::CreateFromNPC: re-recruiting companion id [{}] '{}' for player '{}'",
+			existing[0].id, existing[0].name, owner->GetName()
+		);
+		return companion;
+	}
+
+	// Fresh recruitment: create new companion record
 	Companion* companion = new Companion(
 		npc_type_data,
 		pos.x, pos.y, pos.z, pos.w,
@@ -148,7 +197,6 @@ Companion* Companion::CreateFromNPC(Client* owner, NPC* source_npc)
 	);
 
 	if (!companion) {
-		// npc_type_data ownership follows NPC (freed in NPC destructor)
 		return nullptr;
 	}
 
