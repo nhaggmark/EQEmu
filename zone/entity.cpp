@@ -3234,6 +3234,22 @@ void EntityList::RemoveFromHateLists(Mob *mob, bool settoone)
 		}
 		++it;
 	}
+
+	// Companions are stored in companion_list, not npc_list, so they must be
+	// processed separately. Without this, a dead enemy stays on the companion's
+	// hate list for up to 10 minutes (RemoveStaleEntries timeout), keeping
+	// IsEngaged() true and blocking OOC HP regeneration after combat ends.
+	auto cit = companion_list.begin();
+	while (cit != companion_list.end()) {
+		if (cit->second->CheckAggro(mob)) {
+			if (!settoone) {
+				cit->second->RemoveFromHateList(mob);
+			} else {
+				cit->second->SetHateAmountOnEnt(mob, 1);
+			}
+		}
+		++cit;
+	}
 }
 
 void EntityList::RemoveDebuffs(Mob *caster)
