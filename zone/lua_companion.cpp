@@ -2,6 +2,7 @@
 
 #include "lua_companion.h"
 
+#include "zone/client.h"
 #include "zone/companion.h"
 #include "zone/entity.h"
 #include "zone/lua_client.h"
@@ -152,6 +153,59 @@ void Lua_Companion::GiveAll(Lua_Client client)
 }
 
 // -------------------------------------------------------
+// Follow / Guard
+// -------------------------------------------------------
+
+// SetFollowDistance, SetFollowID, SetFollowCanRun are on Mob (and therefore
+// available on Companion via C++ inheritance), but are exposed through Lua_NPC,
+// not Lua_Mob. Since Lua_Companion inherits Lua_Mob (not Lua_NPC), they must be
+// explicitly added here so Lua scripts can call them on companion objects.
+
+void Lua_Companion::SetFollowDistance(int dist)
+{
+	Lua_Safe_Call_Void();
+	self->SetFollowDistance(static_cast<uint32>(dist));
+}
+
+void Lua_Companion::SetFollowID(int id)
+{
+	Lua_Safe_Call_Void();
+	self->SetFollowID(static_cast<uint32>(id));
+}
+
+void Lua_Companion::SetFollowCanRun(bool v)
+{
+	Lua_Safe_Call_Void();
+	self->SetFollowCanRun(v);
+}
+
+// SetGuardMode(true)  — stop following and hold current position via NPC guard point.
+// SetGuardMode(false) — clear guard point and resume following the companion's owner.
+//
+// NPC::SaveGuardSpot(false) sets m_GuardPoint to current position, making
+// IsGuarding() return true so NPC::AI_DoMovement() holds position.
+// SaveGuardSpot(true) clears m_GuardPoint (sets it to zero-vec), cancelling guard.
+void Lua_Companion::SetGuardMode(bool enabled)
+{
+	Lua_Safe_Call_Void();
+	if (enabled) {
+		// Hold current position: set guard point and stop following
+		self->SaveGuardSpot(false);           // false = set guard (not clear)
+		self->SetFollowID(0);
+		self->StopMoving();
+	} else {
+		// Resume following: clear guard point and re-attach to owner
+		self->SaveGuardSpot(true);            // true = clear guard point
+		Client* owner = entity_list.GetClientByCharID(self->GetOwnerCharacterID());
+		if (owner) {
+			self->SetFollowID(owner->GetID());
+			self->SetFollowDistance(100);
+			self->SetFollowCanRun(true);
+		}
+	}
+}
+
+// -------------------------------------------------------
 // Registration
 // -------------------------------------------------------
 
@@ -171,6 +225,10 @@ luabind::scope lua_register_companion() {
 	.def("GiveAll",                &Lua_Companion::GiveAll)
 	.def("GiveSlot",               &Lua_Companion::GiveSlot)
 	.def("Save",                   &Lua_Companion::Save)
+	.def("SetFollowCanRun",        &Lua_Companion::SetFollowCanRun)
+	.def("SetFollowDistance",      &Lua_Companion::SetFollowDistance)
+	.def("SetFollowID",            &Lua_Companion::SetFollowID)
+	.def("SetGuardMode",           &Lua_Companion::SetGuardMode)
 	.def("SetStance",              &Lua_Companion::SetStance)
 	.def("ShowEquipment",          &Lua_Companion::ShowEquipment)
 	.def("SoulWipe",               &Lua_Companion::SoulWipe)

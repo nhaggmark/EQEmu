@@ -1066,6 +1066,7 @@ void Mob::AI_Process() {
 			if (AI_target_check_timer->Check()) {
 				if (
 					IsNPC() &&
+					!IsCompanion() &&                               // companions manage their own hate list
 					!CastToNPC()->GetSwarmInfo() &&
 					(!IsPet() || (HasOwner() && GetOwner()->IsNPC())) &&
 					!CastToNPC()->GetNPCAggro()

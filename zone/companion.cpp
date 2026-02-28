@@ -420,10 +420,14 @@ bool Companion::Process()
 	// Follow owner or engage owner's target depending on stance
 	Client* owner = GetCompanionOwner();
 	if (owner && m_current_stance != COMPANION_STANCE_PASSIVE) {
-		// If owner is in combat and we don't have a target, pick up owner's target
-		if (owner->GetTarget() && owner->GetTarget()->IsAttackAllowed(this)) {
-			if (!GetTarget() || GetTarget() == owner) {
-				SetTarget(owner->GetTarget());
+		// If owner is in combat and we are not already engaged, assist by adding
+		// the owner's target to our hate list. Without AddToHateList, IsEngaged()
+		// stays false and the combat AI block never fires (see Bot::TryAssistOwner).
+		Mob* owner_target = owner->GetTarget();
+		if (owner_target && IsAttackAllowed(owner_target)) {
+			if (!IsEngaged() || GetTarget() == nullptr) {
+				AddToHateList(owner_target, 1);
+				SetTarget(owner_target);
 			}
 		}
 	}

@@ -59,6 +59,17 @@ public:
 	void SetStance(int stance);  // 0=passive, 1=balanced, 2=aggressive
 
 	// -------------------------------------------------------
+	// Follow / Guard (exposed from NPC/Mob base on Lua_Companion
+	// because Lua_Companion does not inherit Lua_NPC)
+	// -------------------------------------------------------
+	void SetFollowDistance(int dist);
+	void SetFollowID(int id);
+	void SetFollowCanRun(bool v);
+	// SetGuardMode(true)  — hold current position (clears follow ID, sets guard point)
+	// SetGuardMode(false) — resume following owner (clears guard point, restores follow ID)
+	void SetGuardMode(bool enabled);
+
+	// -------------------------------------------------------
 	// Experience
 	// -------------------------------------------------------
 	void AddExperience(uint32 xp);
