@@ -942,13 +942,16 @@ void Group::DisbandGroup(bool joinraid) {
 		Bot::UpdateGroupCastingRoles(this, true);
 	}
 
-	// Companion safety net: suspend any companions BEFORE clearing group
-	// membership. This ensures that no matter how DisbandGroup is reached
-	// (LeaveGroup, DelMember, OnDisconnect, cross-zone, scripting), the
-	// companion is saved to DB and depoped gracefully rather than orphaned.
-	// We null the member slot BEFORE calling Suspend() so that Depop()'s
-	// RemoveCompanionFromGroup() sees GetGroup()==nullptr and skips the
-	// recursive removal path. (BUG-002 fix)
+	// Companion safety net: save and depop any companions BEFORE clearing
+	// group membership. This ensures that no matter how DisbandGroup is
+	// reached (LeaveGroup, DelMember, OnDisconnect, cross-zone, scripting),
+	// the companion is saved to DB and depoped gracefully rather than
+	// orphaned. We null the member slot BEFORE calling Zone() so that
+	// Depop()'s RemoveCompanionFromGroup() sees GetGroup()==nullptr and
+	// skips the recursive removal path. (BUG-002 fix)
+	// Use Zone() instead of Suspend() so is_suspended stays 0 and
+	// SpawnCompanionsOnZone() will restore companions on next login.
+	// (BUG-003 fix)
 	if (RuleB(Companions, CompanionsEnabled)) {
 		for (uint32 ci = 0; ci < MAX_GROUP_MEMBERS; ci++) {
 			if (members[ci] && members[ci]->IsCompanion()) {
@@ -956,7 +959,7 @@ void Group::DisbandGroup(bool joinraid) {
 				comp->SetGrouped(false);
 				members[ci] = nullptr;
 				membername[ci][0] = '\0';
-				comp->Suspend();
+				comp->Zone();
 			}
 		}
 	}
