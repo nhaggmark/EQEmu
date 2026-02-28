@@ -182,6 +182,16 @@ public:
 	bool CheckSpellRecastTimers(uint16 spellid);
 
 	// -------------------------------------------------------
+	// HP Regen
+	// -------------------------------------------------------
+	// Computes the per-tic HP regeneration amount for this companion.
+	// Used both in AI_Start (to seed hp_regen) and on each tic in Process().
+	// Returns the higher of the NPC's native hp_regen_rate (from npc_types) and
+	// the Companions::HPRegenPerTic rule floor so companions with hp_regen_rate=0
+	// still heal between combats.
+	int64 CalcHPRegen() const;
+
+	// -------------------------------------------------------
 	// Stat Scaling
 	// -------------------------------------------------------
 	// Scales stats from recruited_level to current_level using float division:

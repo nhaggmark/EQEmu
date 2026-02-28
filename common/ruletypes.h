@@ -1197,6 +1197,8 @@ RULE_REAL(Companions, ReRecruitBonus, 0.10, "Persuasion roll bonus (as a fractio
 RULE_INT(Companions, DismissedRetentionDays, 30, "Days a dismissed companion's data is retained in the database before permanent deletion")
 RULE_REAL(Companions, CompanionSelfPreservePct, 0.20, "HP percentage below which a companion-type NPC uses self-preservation behaviors (retreat, defensive stance)")
 RULE_REAL(Companions, MercSelfPreservePct, 0.10, "HP percentage below which a mercenary-type companion uses self-preservation behaviors")
+RULE_INT(Companions, HPRegenPerTic, 1, "Minimum HP regenerated per 6-second tic for companions with 0 hp_regen_rate in npc_types")
+RULE_INT(Companions, OOCRegenPct, 5, "Out-of-combat HP regen as percentage of max HP per tic (added on top of HPRegenPerTic when not engaged)")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

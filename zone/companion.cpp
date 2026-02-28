@@ -363,7 +363,49 @@ void Companion::Damage(Mob* from, int64 damage, uint16 spell_id,
 bool Companion::Attack(Mob* other, int Hand, bool FromRiposte, bool IsStrikethrough,
                        bool IsFromSpell, ExtraAttackOptions* opts)
 {
+	if (!other) {
+		return false;
+	}
+
+	// Hard safety net: companions must never strike their owner or any member of
+	// their group regardless of how the target ended up on the hate list.
+	Client* atk_owner = GetCompanionOwner();
+	if (atk_owner) {
+		if (other == atk_owner) {
+			// Target is the owner — scrub them from the hate list and abort
+			RemoveFromHateList(other);
+			SetTarget(nullptr);
+			return false;
+		}
+		Group* atk_grp = GetGroup();
+		if (atk_grp && atk_grp->IsGroupMember(other)) {
+			// Target is a group member — scrub from hate list and abort
+			RemoveFromHateList(other);
+			SetTarget(nullptr);
+			return false;
+		}
+	}
+
 	return NPC::Attack(other, Hand, FromRiposte, IsStrikethrough, IsFromSpell, opts);
+}
+
+// ============================================================
+// HP Regen
+// ============================================================
+
+int64 Companion::CalcHPRegen() const
+{
+	// Use the NPC's native hp_regen_rate if it is already a positive number
+	// (some recruited NPCs have an explicit rate set in npc_types), otherwise
+	// fall back to the rule floor so that every companion heals at least that
+	// amount per tic regardless of their source npc_types row.
+	//
+	// We deliberately do NOT add itembonuses.HPRegen or spellbonuses.HPRegen
+	// here; GetNPCHPRegen() (called by NPC::Process) already adds those on top
+	// of the hp_regen field we are seeding.
+	int64 native_regen = NPCTypedata ? NPCTypedata->hp_regen : 0;
+	int64 floor_regen  = static_cast<int64>(RuleI(Companions, HPRegenPerTic));
+	return std::max(native_regen, floor_regen);
 }
 
 // ============================================================
@@ -381,6 +423,16 @@ void Companion::AI_Start(uint32 iMoveDelay)
 
 	// Load companion-specific spell list
 	LoadCompanionSpells();
+
+	// Seed hp_regen so that companions whose npc_types row has hp_regen_rate=0
+	// still regenerate HP.  CalcHPRegen() returns the greater of the NPC's
+	// native rate and the Companions::HPRegenPerTic rule floor.
+	hp_regen = CalcHPRegen();
+
+	// Allow companions to use OOC regen expressed as a percentage of max HP.
+	// This piggybacks on NPC::Process()'s existing ooc_regen branch which
+	// computes: ooc_regen_calc = GetMaxHP() * ooc_regen / 100.
+	ooc_regen = RuleI(Companions, OOCRegenPct);
 }
 
 void Companion::AI_Stop()
@@ -424,10 +476,32 @@ bool Companion::Process()
 		// the owner's target to our hate list. Without AddToHateList, IsEngaged()
 		// stays false and the combat AI block never fires (see Bot::TryAssistOwner).
 		Mob* owner_target = owner->GetTarget();
-		if (owner_target && IsAttackAllowed(owner_target)) {
-			if (!IsEngaged() || GetTarget() == nullptr) {
-				AddToHateList(owner_target, 1);
-				SetTarget(owner_target);
+		if (owner_target) {
+			// Safety: companions must never assist against the owner, another
+			// companion belonging to the same owner, or any group member.
+			// This covers the case of the player pressing F1 (self-target),
+			// targeting a friendly companion, or targeting another group mate.
+			bool target_is_safe = false;
+			if (owner_target == owner) {
+				// Player targeted themselves (F1 or clicking own portrait)
+				target_is_safe = true;
+			} else if (owner_target->IsCompanion() &&
+			           static_cast<Companion*>(owner_target->CastToNPC())->GetOwnerCharacterID() == m_owner_char_id) {
+				// Player targeted another companion that belongs to the same owner
+				target_is_safe = true;
+			} else {
+				// Do not attack any other member of our group
+				Group* grp = GetGroup();
+				if (grp && grp->IsGroupMember(owner_target)) {
+					target_is_safe = true;
+				}
+			}
+
+			if (!target_is_safe && IsAttackAllowed(owner_target)) {
+				if (!IsEngaged() || GetTarget() == nullptr) {
+					AddToHateList(owner_target, 1);
+					SetTarget(owner_target);
+				}
 			}
 		}
 	}
