@@ -459,8 +459,14 @@ bool Companion::AIDoSpellCast(uint16 spellid, Mob* tar, int32 mana_cost,
 void Companion::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 {
 	NPC::FillSpawnStruct(ns, ForWho);
-	// Mark as NPC spawn type — Titanium doesn't have a special companion spawn type
-	// The companion appears as a regular NPC in the group window
+
+	// Override is_npc and NPC to make the companion appear player-like to the
+	// Titanium client.  This mirrors Bot::FillSpawnStruct (bot.cpp:3807-3813)
+	// and ensures the client treats the companion as a valid group member
+	// target when the player clicks the name tile in the Group Window.
+	ns->spawn.is_npc = 0;
+	ns->spawn.is_pet = 0;
+	ns->spawn.NPC    = 0;   // 0=player, 1=npc, 2=pc corpse, 3=npc corpse
 }
 
 // ============================================================
@@ -475,14 +481,24 @@ bool Companion::Spawn(Client* owner)
 
 	m_owner_char_id = owner->CharacterID();
 
-	// Ensure the raw name field matches GetCleanName() so the spawn packet name
-	// and the group window member name are identical.  Without this the Titanium
-	// client can't associate the group window entry with the in-world entity and
-	// clicking the companion's name in the group window won't target them.
-	// This mirrors Bot::Spawn() which does the same thing (see bot.cpp:3605).
+	// --- Name normalization ---
+	// Ensure the raw `name` field matches `GetCleanName()` so the spawn packet
+	// name and the group window member name are identical.  The NPC constructor
+	// runs MakeNameUnique which appends a 3-digit suffix (e.g. "Guard_Liben001")
+	// but GetCleanName() strips underscores and digits to produce "Guard Liben".
+	// The Titanium client resolves group window clicks to entity IDs by matching
+	// the group member name (from GetCleanName) against spawn names — if they
+	// differ the client silently fails to target.
+	// This mirrors Bot::Spawn() which does the same (see bot.cpp:3605).
+	//
+	// Invalidate the clean_name cache first so any subsequent GetCleanName()
+	// call recomputes from the new `name` value.
+	clean_name[0] = '\0';
 	strcpy(name, GetCleanName());
 
 	// Add to entity list — this assigns the entity ID and sends spawn packet
+	// immediately (dont_queue = true so the companion appears in the world right
+	// away, not on the next spawn tick).
 	entity_list.AddCompanion(this, true, true);
 
 	if (!GetID()) {
@@ -490,7 +506,15 @@ bool Companion::Spawn(Client* owner)
 		return false;
 	}
 
-	LogInfo("Companion [{}] spawned for owner [{}] (entity id: {})",
+	// Start the NPC AI so the companion acts in combat, follows the owner,
+	// and casts spells.  LoadCompanionSpells() is called inside AI_Start().
+	AI_Start();
+
+	// Join the owner's group (creates a new group if the owner is not already
+	// in one).  Sets follow ID so the companion trails the owner.
+	CompanionJoinClientGroup();
+
+	LogInfo("Companion::Spawn: [{}] spawned for owner [{}] (entity id: {})",
 	        GetName(), owner->GetName(), GetID());
 
 	return true;
@@ -1712,14 +1736,18 @@ void Client::SpawnCompanionsOnZone()
 			companion->RecordZoneVisit(zone->GetZoneID());
 		}
 
-		entity_list.AddCompanion(companion);
-
-		// Start NPC AI (also loads the companion spell list for this level/class).
-		companion->AI_Start();
-
-		// Rejoin the owner's group. The owner may not be in a group yet at
-		// zone-in — CompanionJoinClientGroup creates one when needed.
-		companion->CompanionJoinClientGroup();
+		// Spawn() is the single entry point for spawning companions.  It
+		// normalizes the name field so spawn packet and group window names
+		// match, adds to the entity list, starts AI, and joins the owner's
+		// group.
+		if (!companion->Spawn(this)) {
+			LogError(
+				"SpawnCompanionsOnZone: Spawn() failed for companion id {} (owner {})",
+				cd.id, char_id
+			);
+			delete companion;
+			continue;
+		}
 
 		LogInfo(
 			"SpawnCompanionsOnZone: spawned companion '{}' (id {}) for player '{}'",

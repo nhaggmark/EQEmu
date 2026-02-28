@@ -3649,10 +3649,6 @@ Lua_Companion Lua_Client::CreateCompanion(Lua_NPC npc_lua)
 		return Lua_Companion(nullptr);
 	}
 
-	// Add to entity list and send spawn packet immediately (dont_queue = true so
-	// the companion appears in the world right away, not on the next spawn tick).
-	entity_list.AddCompanion(companion, true, true);
-
 	// Persist to companion_data. For fresh recruitment this does an INSERT and
 	// sets m_companion_id. For re-recruitment CreateFromNPC already called Load()
 	// so this does an UPDATE. Either way the record must exist before group join
@@ -3660,17 +3656,19 @@ Lua_Companion Lua_Client::CreateCompanion(Lua_NPC npc_lua)
 	if (!companion->Save()) {
 		LogError("CreateCompanion: Save() failed for [{}] owner [{}]",
 		         companion->GetName(), self->GetName());
-		companion->Depop();
+		delete companion;
 		return Lua_Companion(nullptr);
 	}
 
-	// Start the NPC AI so the companion acts in combat, follows the owner,
-	// and casts spells. LoadCompanionSpells() is called inside AI_Start().
-	companion->AI_Start();
-
-	// Add companion to the owner's group (creates a new group if the owner
-	// is not already in one). Sets follow ID so the companion trails the owner.
-	companion->CompanionJoinClientGroup();
+	// Spawn() is the single entry point for spawning companions.  It normalizes
+	// the name field so spawn packet and group window names match, adds to the
+	// entity list, starts AI, and joins the owner's group.
+	if (!companion->Spawn(self)) {
+		LogError("CreateCompanion: Spawn() failed for [{}] owner [{}]",
+		         companion->GetName(), self->GetName());
+		delete companion;
+		return Lua_Companion(nullptr);
+	}
 
 	// Depop the source NPC and start its respawn timer so the spawn point
 	// eventually re-populates with a new NPC.
