@@ -85,6 +85,8 @@ public:
 	void ShowEquipment(Lua_Client client);
 	void GiveSlot(Lua_Client client, std::string slot_name);
 	void GiveAll(Lua_Client client);
+	// Equip item into companion slot (slot = EQ::invslot::EQUIPMENT slot ID 0-22)
+	bool GiveItem(uint32 item_id, int16 slot);
 };
 
 #endif // LUA_EQEMU

@@ -2,6 +2,7 @@
 
 #include "lua_npc.h"
 
+#include "zone/companion.h"
 #include "zone/lua_client.h"
 #include "zone/lua_item.h"
 #include "zone/lua_iteminst.h"
@@ -958,6 +959,42 @@ uint32 Lua_NPC::GetNPCTintIndex()
 	return self->GetNPCTintIndex();
 }
 
+bool Lua_NPC::GiveItem(uint32 item_id, int16 slot)
+{
+	Lua_Safe_Call_Bool();
+	if (!self->IsCompanion()) {
+		return false;
+	}
+	return self->CastToCompanion()->GiveItem(item_id, slot);
+}
+
+void Lua_NPC::GiveSlot(Lua_Client client, std::string slot_name)
+{
+	Lua_Safe_Call_Void();
+	if (!self->IsCompanion()) {
+		return;
+	}
+	self->CastToCompanion()->GiveSlot(client, slot_name);
+}
+
+void Lua_NPC::GiveAll(Lua_Client client)
+{
+	Lua_Safe_Call_Void();
+	if (!self->IsCompanion()) {
+		return;
+	}
+	self->CastToCompanion()->GiveAll(client);
+}
+
+uint32 Lua_NPC::GetOwnerCharacterID()
+{
+	Lua_Safe_Call_Int();
+	if (!self->IsCompanion()) {
+		return 0;
+	}
+	return self->CastToCompanion()->GetOwnerCharacterID();
+}
+
 luabind::scope lua_register_npc() {
 	return luabind::class_<Lua_NPC, Lua_Mob>("NPC")
 	.def(luabind::constructor<>())
@@ -1004,6 +1041,9 @@ luabind::scope lua_register_npc() {
 	.def("GetFollowID", (int(Lua_NPC::*)(void))&Lua_NPC::GetFollowID)
 	.def("GetGold", (uint32(Lua_NPC::*)(void))&Lua_NPC::GetGold)
 	.def("GetGrid", (int(Lua_NPC::*)(void))&Lua_NPC::GetGrid)
+	.def("GiveAll", (void(Lua_NPC::*)(Lua_Client))&Lua_NPC::GiveAll)
+	.def("GiveItem", (bool(Lua_NPC::*)(uint32,int16))&Lua_NPC::GiveItem)
+	.def("GiveSlot", (void(Lua_NPC::*)(Lua_Client,std::string))&Lua_NPC::GiveSlot)
 	.def("GetGuardPointX", (float(Lua_NPC::*)(void))&Lua_NPC::GetGuardPointX)
 	.def("GetGuardPointY", (float(Lua_NPC::*)(void))&Lua_NPC::GetGuardPointY)
 	.def("GetGuardPointZ", (float(Lua_NPC::*)(void))&Lua_NPC::GetGuardPointZ)
@@ -1026,6 +1066,7 @@ luabind::scope lua_register_npc() {
 	.def("GetNPCSpellsID", (uint32(Lua_NPC::*)(void))&Lua_NPC::GetNPCSpellsID)
 	.def("GetNPCStat", (float(Lua_NPC::*)(std::string))&Lua_NPC::GetNPCStat)
 	.def("GetNPCTintIndex", (uint32(Lua_NPC::*)(void))&Lua_NPC::GetNPCTintIndex)
+	.def("GetOwnerCharacterID", (uint32(Lua_NPC::*)(void))&Lua_NPC::GetOwnerCharacterID)
 	.def("GetPetSpellID", (int(Lua_NPC::*)(void))&Lua_NPC::GetPetSpellID)
 	.def("GetPlatinum", (uint32(Lua_NPC::*)(void))&Lua_NPC::GetPlatinum)
 	.def("GetPrimSkill", (int(Lua_NPC::*)(void))&Lua_NPC::GetPrimSkill)

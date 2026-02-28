@@ -152,6 +152,12 @@ void Lua_Companion::GiveAll(Lua_Client client)
 	self->GiveAll(client);
 }
 
+bool Lua_Companion::GiveItem(uint32 item_id, int16 slot)
+{
+	Lua_Safe_Call_Bool();
+	return self->GiveItem(item_id, slot);
+}
+
 // -------------------------------------------------------
 // Follow / Guard
 // -------------------------------------------------------
@@ -223,6 +229,7 @@ luabind::scope lua_register_companion() {
 	.def("GetRecruitedNPCTypeID",  &Lua_Companion::GetRecruitedNPCTypeID)
 	.def("GetStance",              &Lua_Companion::GetStance)
 	.def("GiveAll",                &Lua_Companion::GiveAll)
+	.def("GiveItem",               &Lua_Companion::GiveItem)
 	.def("GiveSlot",               &Lua_Companion::GiveSlot)
 	.def("Save",                   &Lua_Companion::Save)
 	.def("SetFollowCanRun",        &Lua_Companion::SetFollowCanRun)

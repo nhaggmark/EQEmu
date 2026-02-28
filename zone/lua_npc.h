@@ -177,6 +177,11 @@ public:
 	void ScaleNPC(uint8 npc_level);
 	void ScaleNPC(uint8 npc_level, bool override_special_abilities);
 	bool IsUnderwaterOnly();
+	// Companion equipment: valid only when IsCompanion(); no-ops otherwise
+	bool GiveItem(uint32 item_id, int16 slot);
+	void GiveSlot(Lua_Client client, std::string slot_name);
+	void GiveAll(Lua_Client client);
+	uint32 GetOwnerCharacterID();
 	bool HasSpecialAbilities();
 	void DeleteBucket(std::string bucket_name);
 	std::string GetBucket(std::string bucket_name);
