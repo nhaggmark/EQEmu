@@ -942,6 +942,25 @@ void Group::DisbandGroup(bool joinraid) {
 		Bot::UpdateGroupCastingRoles(this, true);
 	}
 
+	// Companion safety net: suspend any companions BEFORE clearing group
+	// membership. This ensures that no matter how DisbandGroup is reached
+	// (LeaveGroup, DelMember, OnDisconnect, cross-zone, scripting), the
+	// companion is saved to DB and depoped gracefully rather than orphaned.
+	// We null the member slot BEFORE calling Suspend() so that Depop()'s
+	// RemoveCompanionFromGroup() sees GetGroup()==nullptr and skips the
+	// recursive removal path. (BUG-002 fix)
+	if (RuleB(Companions, CompanionsEnabled)) {
+		for (uint32 ci = 0; ci < MAX_GROUP_MEMBERS; ci++) {
+			if (members[ci] && members[ci]->IsCompanion()) {
+				Companion* comp = members[ci]->CastToCompanion();
+				comp->SetGrouped(false);
+				members[ci] = nullptr;
+				membername[ci][0] = '\0';
+				comp->Suspend();
+			}
+		}
+	}
+
 	auto outapp = new EQApplicationPacket(OP_GroupUpdate, sizeof(GroupUpdate_Struct));
 
 	GroupUpdate_Struct* gu = (GroupUpdate_Struct*) outapp->pBuffer;
@@ -1288,6 +1307,20 @@ void Client::LeaveGroup() {
 		// Account for both client and merc leaving the group
 		if (GetMerc() && g == GetMerc()->GetGroup()) {
 			MemberCount -= 1;
+		}
+
+		// Account for companions leaving with the owner so a player + companion
+		// group doesn't trigger a premature DisbandGroup. Mirrors the bot/merc
+		// subtraction above. (BUG-002 fix)
+		if (RuleB(Companions, CompanionsEnabled)) {
+			for (uint32 ci = 0; ci < MAX_GROUP_MEMBERS; ci++) {
+				if (g->members[ci] && g->members[ci]->IsCompanion()) {
+					auto* companion = g->members[ci]->CastToCompanion();
+					if (companion->GetOwnerCharacterID() == CharacterID()) {
+						MemberCount -= 1;
+					}
+				}
+			}
 		}
 
 		if (RuleB(Bots, Enabled)) {

@@ -7304,9 +7304,10 @@ void Client::Handle_OP_GroupDisband(const EQApplicationPacket *app)
 	// -----------------------------------------------------------------------
 	// Companion protection: the group IS the recruitment relationship.
 	// A player cannot fully disband while a companion is in the group.
-	//   - Explicitly kicking the companion: treat as Dismiss (say 'dismiss' path)
-	//   - Disbanding a multi-player group: eject other players, keep owner+companion
+	// The Disband button NEVER dismisses a companion regardless of targeting.
+	// Dismissal is only possible via the explicit "dismiss" chat command.
 	//   - Disbanding when only owner+companion remain: send a hint, do nothing
+	//   - Disbanding a multi-player group: eject other players, keep owner+companion
 	// -----------------------------------------------------------------------
 	if (RuleB(Companions, CompanionsEnabled)) {
 		// Locate any companion in this group
@@ -7319,15 +7320,11 @@ void Client::Handle_OP_GroupDisband(const EQApplicationPacket *app)
 		}
 
 		if (companion_in_group) {
-			// Case 1: leader is explicitly targeting the companion to kick them
-			if (group->IsLeader(this) && memberToDisband == companion_in_group) {
-				companion_in_group->Dismiss();
-				if (LFP)
-					UpdateLFP();
-				return;
-			}
+			// The Disband button must NEVER dismiss a companion regardless of
+			// what the player is targeting. Dismissal only happens through the
+			// explicit "dismiss" chat command. (BUG-002 fix)
 
-			// Case 2: only owner + companion remain — cannot disband, give hint
+			// Case 1: only owner + companion remain -- cannot disband, give hint
 			if (group->GroupCount() <= 2) {
 				Message(Chat::White,
 					"%s says 'I won't be left behind. Say \"dismiss\" if you wish to release me.'",
@@ -7335,7 +7332,7 @@ void Client::Handle_OP_GroupDisband(const EQApplicationPacket *app)
 				return;
 			}
 
-			// Case 3: multi-player group — remove all non-owner, non-companion members
+			// Case 2: multi-player group -- remove all non-owner, non-companion members
 			// so only owner + companion remain grouped.
 			if (group->IsLeader(this)) {
 				// Collect members to remove before modifying the array
