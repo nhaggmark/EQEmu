@@ -646,6 +646,19 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 			LogNpcHandinDetail("EVENT_TRADE triggered for NPC [{}]", tradingWith->GetNPCTypeID());
 		}
 
+		// Companions manage item consumption entirely in their EVENT_TRADE Lua handler
+		// (GiveItem / equip logic). The standard handin return system must not fire
+		// or it will return the items and say "I have no need for this."
+		if (tradingWith->IsCompanion()) {
+			handin_npc->ResetHandin();
+			for (auto &inst: insts) {
+				if (inst) {
+					safe_delete(inst);
+				}
+			}
+			return;
+		}
+
 		// this is a catch-all return for items that weren't consumed by the EVENT_TRADE subroutine
 		// it's possible we have a quest NPC that doesn't have an EVENT_TRADE subroutine
 		// we can't double fire the ReturnHandinItems() event, so we need to check if it's already been processed from EVENT_TRADE
