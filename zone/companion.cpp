@@ -1279,10 +1279,14 @@ void Companion::ShowEquipment(Client* client)
 	}
 }
 
-void Companion::GiveSlot(Client* client, const std::string& slot_name)
+// GiveSlot: return the item in the named slot to the client.
+// Returns true if an item was returned, false if the slot was empty or invalid.
+// The caller is responsible for telling the player when false is returned (e.g.
+// the !unequip command prints "nothing equipped"; the trade handler stays silent).
+bool Companion::GiveSlot(Client* client, const std::string& slot_name)
 {
 	if (!client) {
-		return;
+		return false;
 	}
 
 	int16 slot = SlotNameToSlotID(slot_name);
@@ -1292,15 +1296,13 @@ void Companion::GiveSlot(Client* client, const std::string& slot_name)
 		    "shoulder, arms, back, wrist1, wrist2, range, hands, primary, secondary, "
 		    "finger1, finger2, chest, legs, feet, waist, ammo",
 		    slot_name.c_str());
-		return;
+		return false;
 	}
 
 	uint32 item_id = m_equipment[slot];
 	if (item_id == 0) {
-		const char* slot_label = EQ::invslot::GetInvPossessionsSlotName(slot);
-		client->Message(Chat::Yellow,
-		    "%s has nothing equipped in slot '%s'.", GetCleanName(), slot_label);
-		return;
+		// Slot is empty — nothing to return.
+		return false;
 	}
 
 	// Remove from companion
@@ -1319,6 +1321,7 @@ void Companion::GiveSlot(Client* client, const std::string& slot_name)
 
 	LogInfo("Companion [{}] gave item [{}] (slot [{}]) to client [{}]",
 	    GetName(), item_id, slot, client->GetName());
+	return true;
 }
 
 void Companion::GiveAll(Client* client)

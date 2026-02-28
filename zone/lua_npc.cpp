@@ -968,13 +968,13 @@ bool Lua_NPC::GiveItem(uint32 item_id, int16 slot)
 	return self->CastToCompanion()->GiveItem(item_id, slot);
 }
 
-void Lua_NPC::GiveSlot(Lua_Client client, std::string slot_name)
+bool Lua_NPC::GiveSlot(Lua_Client client, std::string slot_name)
 {
-	Lua_Safe_Call_Void();
+	Lua_Safe_Call_Bool();
 	if (!self->IsCompanion()) {
-		return;
+		return false;
 	}
-	self->CastToCompanion()->GiveSlot(client, slot_name);
+	return self->CastToCompanion()->GiveSlot(client, slot_name);
 }
 
 void Lua_NPC::GiveAll(Lua_Client client)
@@ -1043,7 +1043,7 @@ luabind::scope lua_register_npc() {
 	.def("GetGrid", (int(Lua_NPC::*)(void))&Lua_NPC::GetGrid)
 	.def("GiveAll", (void(Lua_NPC::*)(Lua_Client))&Lua_NPC::GiveAll)
 	.def("GiveItem", (bool(Lua_NPC::*)(uint32,int16))&Lua_NPC::GiveItem)
-	.def("GiveSlot", (void(Lua_NPC::*)(Lua_Client,std::string))&Lua_NPC::GiveSlot)
+	.def("GiveSlot", (bool(Lua_NPC::*)(Lua_Client,std::string))&Lua_NPC::GiveSlot)
 	.def("GetGuardPointX", (float(Lua_NPC::*)(void))&Lua_NPC::GetGuardPointX)
 	.def("GetGuardPointY", (float(Lua_NPC::*)(void))&Lua_NPC::GetGuardPointY)
 	.def("GetGuardPointZ", (float(Lua_NPC::*)(void))&Lua_NPC::GetGuardPointZ)

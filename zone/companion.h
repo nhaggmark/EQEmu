@@ -212,7 +212,7 @@ public:
 
 	// Equipment listing / retrieval (called from Lua companion.lua)
 	void ShowEquipment(Client* client);
-	void GiveSlot(Client* client, const std::string& slot_name);
+	bool GiveSlot(Client* client, const std::string& slot_name);
 	void GiveAll(Client* client);
 
 	// -------------------------------------------------------
