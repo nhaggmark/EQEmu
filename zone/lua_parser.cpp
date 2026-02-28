@@ -7,6 +7,7 @@
 #include "zone/lua_bot.h"
 #include "zone/lua_buff.h"
 #include "zone/lua_client.h"
+#include "zone/companion.h"
 #include "zone/lua_companion.h"
 #include "zone/lua_corpse.h"
 #include "zone/lua_database.h"
@@ -503,11 +504,19 @@ int LuaParser::_EventNPC(std::string package_name, QuestEventID evt, NPC* npc, M
 		}
 
 		lua_createtable(L, 0, 0);
-		//always push self
-		Lua_NPC l_npc(npc);
-		luabind::adl::object l_npc_o = luabind::adl::object(L, l_npc);
-		l_npc_o.push(L);
-		lua_setfield(L, -2, "self");
+		//always push self — push as Lua_Companion when the NPC is a companion so
+		//companion-specific methods (Dismiss, SetStance, ShowEquipment, etc.) are accessible
+		if (npc->IsCompanion()) {
+			Lua_Companion l_comp(npc->CastToCompanion());
+			luabind::adl::object l_comp_o = luabind::adl::object(L, l_comp);
+			l_comp_o.push(L);
+			lua_setfield(L, -2, "self");
+		} else {
+			Lua_NPC l_npc(npc);
+			luabind::adl::object l_npc_o = luabind::adl::object(L, l_npc);
+			l_npc_o.push(L);
+			lua_setfield(L, -2, "self");
+		}
 
 		auto arg_function = NPCArgumentDispatch[evt];
 		arg_function(this, L, npc, init, data, extra_data, extra_pointers);

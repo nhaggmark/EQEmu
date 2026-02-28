@@ -1164,6 +1164,10 @@ void Client::Handle_Connect_OP_SendExpZonein(const EQApplicationPacket *app)
 	if (ClientVersion() < EQ::versions::ClientVersion::SoF)
 	{
 		SendZoneInPackets();
+
+		// Titanium never sends OP_WorldObjectsSent, so spawn companions here
+		// instead of Handle_Connect_OP_WorldObjectsSent which is SoF+ only.
+		SpawnCompanionsOnZone();
 	}
 
 	return;
@@ -1235,6 +1239,7 @@ void Client::Handle_Connect_OP_WorldObjectsSent(const EQApplicationPacket *app)
 		SpawnMercOnZone();
 	}
 
+	// SoF+ companion spawn: mirrors Titanium path in Handle_Connect_OP_SendExpZonein
 	SpawnCompanionsOnZone();
 
 	return;

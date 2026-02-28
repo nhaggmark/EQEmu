@@ -1297,6 +1297,11 @@ void Lua_Mob::NavigateTo(double x, double y, double z) {
 	self->NavigateTo(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z));
 }
 
+void Lua_Mob::StopMoving() {
+	Lua_Safe_Call_Void();
+	self->StopMoving();
+}
+
 void Lua_Mob::StopNavigation() {
 	Lua_Safe_Call_Void();
 	self->StopNavigation();
@@ -4096,6 +4101,7 @@ luabind::scope lua_register_mob() {
 	.def("SpellFinished", (bool(Lua_Mob::*)(int,Lua_Mob,int,int,uint32,int))&Lua_Mob::SpellFinished)
 	.def("SpellFinished", (bool(Lua_Mob::*)(int,Lua_Mob,int,int,uint32,int,bool))&Lua_Mob::SpellFinished)
 	.def("Spin", (void(Lua_Mob::*)(void))&Lua_Mob::Spin)
+	.def("StopMoving", (void(Lua_Mob::*)(void))&Lua_Mob::StopMoving)
 	.def("StopNavigation", (void(Lua_Mob::*)(void))&Lua_Mob::StopNavigation)
 	.def("Stun", (void(Lua_Mob::*)(int))&Lua_Mob::Stun)
 	.def("TarGlobal", (void(Lua_Mob::*)(const char*,const char*,const char*,int,int,int))&Lua_Mob::TarGlobal)
