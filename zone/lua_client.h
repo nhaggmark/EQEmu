@@ -5,8 +5,10 @@
 #include "zone/lua_mob.h"
 
 class Client;
+class Lua_Companion;
 class Lua_Expedition;
 class Lua_Group;
+class Lua_NPC;
 class Lua_Raid;
 class Lua_Inventory;
 class Lua_Packet;
@@ -647,6 +649,11 @@ public:
 	void            Fling(float value, float target_x, float target_y, float target_z);
 	void            Fling(float value, float target_x, float target_y, float target_z, bool ignore_los);
 	void            Fling(float value, float target_x, float target_y, float target_z, bool ignore_los, bool clip_through_walls);
+
+	// Companion system (Task 17)
+	Lua_Companion   CreateCompanion(Lua_NPC npc);
+	Lua_Companion   GetCompanionByNPCTypeID(uint32 npc_type_id);
+	bool            HasActiveCompanion(uint32 npc_type_id);
 };
 
 #endif // LUA_EQEMU

@@ -37,6 +37,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "common/rulesys.h"
 #include "common/shared_tasks.h"
 #include "zone/bot.h"
+#include "zone/companion.h"
 #include "zone/dialogue_window.h"
 #include "zone/dynamic_zone.h"
 #include "zone/event_codes.h"
@@ -1163,6 +1164,10 @@ void Client::Handle_Connect_OP_SendExpZonein(const EQApplicationPacket *app)
 	if (ClientVersion() < EQ::versions::ClientVersion::SoF)
 	{
 		SendZoneInPackets();
+
+		// Titanium never sends OP_WorldObjectsSent, so spawn companions here
+		// instead of Handle_Connect_OP_WorldObjectsSent which is SoF+ only.
+		SpawnCompanionsOnZone();
 	}
 
 	return;
@@ -1233,6 +1238,9 @@ void Client::Handle_Connect_OP_WorldObjectsSent(const EQApplicationPacket *app)
 	{
 		SpawnMercOnZone();
 	}
+
+	// SoF+ companion spawn: mirrors Titanium path in Handle_Connect_OP_SendExpZonein
+	SpawnCompanionsOnZone();
 
 	return;
 }
@@ -7296,6 +7304,63 @@ void Client::Handle_OP_GroupDisband(const EQApplicationPacket *app)
 		auto group2 = memberToDisband->GetGroup();
 		if (group2 != group) // they're not in our group!
 			memberToDisband = this;
+	}
+
+	// -----------------------------------------------------------------------
+	// Companion protection: the group IS the recruitment relationship.
+	// A player cannot fully disband while a companion is in the group.
+	// The Disband button NEVER dismisses a companion regardless of targeting.
+	// Dismissal is only possible via the explicit "dismiss" chat command.
+	//   - Disbanding when only owner+companion remain: send a hint, do nothing
+	//   - Disbanding a multi-player group: eject other players, keep owner+companion
+	// -----------------------------------------------------------------------
+	if (RuleB(Companions, CompanionsEnabled)) {
+		// Locate any companion in this group
+		Companion* companion_in_group = nullptr;
+		for (uint32 slot_idx = 0; slot_idx < MAX_GROUP_MEMBERS; ++slot_idx) {
+			if (group->members[slot_idx] && group->members[slot_idx]->IsCompanion()) {
+				companion_in_group = group->members[slot_idx]->CastToCompanion();
+				break;
+			}
+		}
+
+		if (companion_in_group) {
+			// The Disband button must NEVER dismiss a companion regardless of
+			// what the player is targeting. Dismissal only happens through the
+			// explicit "dismiss" chat command. (BUG-002 fix)
+
+			// Case 1: only owner + companion remain -- cannot disband, give hint
+			if (group->GroupCount() <= 2) {
+				Message(Chat::White,
+					"%s says 'I won't be left behind. Say \"dismiss\" if you wish to release me.'",
+					companion_in_group->GetCleanName());
+				return;
+			}
+
+			// Case 2: multi-player group -- remove all non-owner, non-companion members
+			// so only owner + companion remain grouped.
+			if (group->IsLeader(this)) {
+				// Collect members to remove before modifying the array
+				std::vector<Mob*> members_to_eject;
+				for (uint32 slot_idx = 0; slot_idx < MAX_GROUP_MEMBERS; ++slot_idx) {
+					Mob* m = group->members[slot_idx];
+					if (!m)
+						continue;
+					if (m == this)
+						continue; // owner stays
+					if (m->IsCompanion())
+						continue; // companion stays
+					members_to_eject.push_back(m);
+				}
+				for (Mob* m : members_to_eject) {
+					group->DelMember(m, false);
+				}
+			}
+
+			if (LFP)
+				UpdateLFP();
+			return;
+		}
 	}
 
 	if (group->GroupCount() < 3)

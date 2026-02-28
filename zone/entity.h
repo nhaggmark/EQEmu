@@ -56,6 +56,7 @@ struct UseAA_Struct;
 struct Who_All_Struct;
 
 class Bot;
+class Companion;
 
 extern EntityList entity_list;
 
@@ -81,6 +82,7 @@ public:
 	virtual bool IsEncounter()		    const { return false; }
 	virtual bool IsBot()                const { return false; }
 	virtual bool IsAura()			    const { return false; }
+	virtual bool IsCompanion()          const { return false; }
 	virtual bool IsOfClientBot()        const { return false; }
 	virtual bool IsOfClientBotMerc()    const { return false; }
 
@@ -98,6 +100,7 @@ public:
 	Trap	*CastToTrap();
 	Beacon	*CastToBeacon();
 	Encounter *CastToEncounter();
+	Companion *CastToCompanion();
 
 	const Client	*CastToClient() const;
 	const NPC		*CastToNPC() const;
@@ -109,6 +112,7 @@ public:
 	const Trap		*CastToTrap() const;
 	const Beacon	*CastToBeacon() const;
 	const Encounter *CastToEncounter() const;
+	const Companion *CastToCompanion() const;
 
 	inline const uint16& GetInitialId() const { return initial_id; }
 	inline const uint16& GetID() const { return id; }
@@ -637,6 +641,15 @@ private:
 		void GetBotList(std::list<Bot*> &b_list);
 	private:
 		std::unordered_map<uint16, Bot*> bot_list;
+
+	public:
+		void AddCompanion(Companion* new_companion, bool send_spawn_packet = true, bool dont_queue = false);
+		bool RemoveCompanion(uint16 entity_id);
+		Companion* GetCompanionByOwnerCharacterID(uint32 character_id);
+		std::vector<Companion*> GetCompanionsByOwnerCharacterID(uint32 character_id);
+		inline const std::unordered_map<uint16, Companion*> &GetCompanionList() { return companion_list; }
+	private:
+		std::unordered_map<uint16, Companion*> companion_list;
 };
 
 class BulkZoneSpawnPacket {

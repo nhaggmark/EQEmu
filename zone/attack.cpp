@@ -25,6 +25,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "common/spdat.h"
 #include "common/strings.h"
 #include "zone/bot.h"
+#include "zone/companion.h"
 #include "zone/fastmath.h"
 #include "zone/lua_parser.h"
 #include "zone/mob.h"
@@ -2796,6 +2797,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 					killer &&
 					(
 						killer->IsClient() ||
+						killer->IsCompanion() ||
 						(
 							killer->HasOwner() &&
 							killer->GetUltimateOwner()->IsClient()
@@ -2818,6 +2820,15 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		if (killer) {
 			if (killer->GetOwner() != 0 && killer->GetOwner()->IsClient()) {
 				killer = killer->GetOwner();
+			}
+
+			// Companion kills: resolve killer to the companion's owner client so
+			// loot rights are granted to the player, matching Bot/Merc behaviour.
+			if (killer->IsCompanion()) {
+				Client* comp_owner = killer->CastToCompanion()->GetCompanionOwner();
+				if (comp_owner) {
+					killer = comp_owner;
+				}
 			}
 
 			if (killer->IsClient() && !killer->CastToClient()->GetGM()) {

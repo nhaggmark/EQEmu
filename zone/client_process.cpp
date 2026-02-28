@@ -21,6 +21,7 @@
 
 #include "client.h"
 
+#include "companion.h"
 #include "common/data_verification.h"
 #include "common/eqemu_logsys.h"
 #include "common/events/player_event_logs.h"
@@ -205,6 +206,17 @@ bool Client::Process() {
 				GetMerc()->Save();
 				GetMerc()->Depop();
 			}
+
+			// Save and depop companions before camp completes.
+			// Use Zone() (not Suspend()) so is_suspended stays 0 and
+			// SpawnCompanionsOnZone() will restore them on next login.
+			if (RuleB(Companions, CompanionsEnabled)) {
+				auto companions = entity_list.GetCompanionsByOwnerCharacterID(CharacterID());
+				for (auto* comp : companions) {
+					comp->Zone();
+				}
+			}
+
 			instalog = true;
 
 			camp_timer.Disable();
@@ -695,6 +707,15 @@ void Client::OnDisconnect(bool hard_disconnect) {
 		if (GetMerc()) {
 			GetMerc()->Save();
 			GetMerc()->Depop();
+		}
+
+		// Save and depop companions on hard disconnect (crash, linkdead, kick).
+		// Use Zone() so is_suspended stays 0 for respawn on next login.
+		if (RuleB(Companions, CompanionsEnabled)) {
+			auto companions = entity_list.GetCompanionsByOwnerCharacterID(CharacterID());
+			for (auto* comp : companions) {
+				comp->Zone();
+			}
 		}
 
 		auto* r = entity_list.GetRaidByClient(this);

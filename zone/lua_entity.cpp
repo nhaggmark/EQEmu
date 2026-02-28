@@ -2,9 +2,11 @@
 
 #include "lua_entity.h"
 
+#include "zone/companion.h"
 #include "zone/entity.h"
 #include "zone/lua_bot.h"
 #include "zone/lua_client.h"
+#include "zone/lua_companion.h"
 #include "zone/lua_corpse.h"
 #include "zone/lua_door.h"
 #include "zone/lua_merc.h"
@@ -79,6 +81,11 @@ bool Lua_Entity::IsBot() {
 	return self->IsBot();
 }
 
+bool Lua_Entity::IsCompanion() {
+	Lua_Safe_Call_Bool();
+	return self->IsCompanion();
+}
+
 bool Lua_Entity::IsAura() {
 	Lua_Safe_Call_Bool();
 	return self->IsAura();
@@ -141,6 +148,12 @@ Lua_Bot Lua_Entity::CastToBot() {
 	return Lua_Bot(b);
 }
 
+Lua_Companion Lua_Entity::CastToCompanion() {
+	void *d = GetLuaPtrData();
+	Companion *c = reinterpret_cast<Companion*>(d);
+	return Lua_Companion(c);
+}
+
 Lua_Merc Lua_Entity::CastToMerc() {
 	void *d = GetLuaPtrData();
 	Merc *m = reinterpret_cast<Merc*>(d);
@@ -154,6 +167,7 @@ luabind::scope lua_register_entity() {
 	.property("valid", &Lua_Entity::Valid)
 	.def("CastToBot", &Lua_Entity::CastToBot)
 	.def("CastToClient", &Lua_Entity::CastToClient)
+	.def("CastToCompanion", &Lua_Entity::CastToCompanion)
 	.def("CastToCorpse", &Lua_Entity::CastToCorpse)
 	.def("CastToDoor", &Lua_Entity::CastToDoor)
 	.def("CastToMerc", &Lua_Entity::CastToMerc)
@@ -165,6 +179,7 @@ luabind::scope lua_register_entity() {
 	.def("IsBeacon", &Lua_Entity::IsBeacon)
 	.def("IsBot", &Lua_Entity::IsBot)
 	.def("IsClient", &Lua_Entity::IsClient)
+	.def("IsCompanion", &Lua_Entity::IsCompanion)
 	.def("IsCorpse", &Lua_Entity::IsCorpse)
 	.def("IsDoor", &Lua_Entity::IsDoor)
 	.def("IsEncounter", &Lua_Entity::IsEncounter)

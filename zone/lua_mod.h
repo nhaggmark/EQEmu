@@ -1,10 +1,15 @@
 #pragma once
 
+#include "common/eq_constants.h"
 #include "common/repositories/bug_reports_repository.h"
 
 #include <string>
 
 struct lua_State;
+struct DamageHitInfo;
+struct ExtraAttackOptions;
+class Client;
+class Mob;
 
 class LuaParser;
 class LuaMod

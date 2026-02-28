@@ -7,6 +7,7 @@
 class Entity;
 class Lua_Client;
 class Lua_Bot;
+class Lua_Companion;
 class Lua_Merc;
 class Lua_NPC;
 class Lua_Mob;
@@ -48,6 +49,7 @@ public:
 	bool IsBeacon();
 	bool IsEncounter();
 	bool IsBot();
+	bool IsCompanion();
 	bool IsAura();
 	bool IsOfClientBot();
 	bool IsOfClientBotMerc();
@@ -60,6 +62,7 @@ public:
 	Lua_Object CastToObject();
 	Lua_Door CastToDoor();
 	Lua_Bot CastToBot();
+	Lua_Companion CastToCompanion();
 	Lua_Merc CastToMerc();
 };
 

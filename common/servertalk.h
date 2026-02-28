@@ -272,6 +272,10 @@
 #define ServerOP_WWSpell 0x4757
 #define ServerOP_WWTaskUpdate 0x4758
 
+// companion system
+#define ServerOP_CompanionZone    0x4800 // world->zone: restore companion on player zone-in
+#define ServerOP_CompanionDismiss 0x4801 // zone->world: persist companion dismiss/death across zones
+
 // player events
 #define ServerOP_QSSendQuery 0x5000
 #define ServerOP_PlayerEvent 0x5100
@@ -1778,6 +1782,19 @@ struct BazaarPurchaseMessaging_Struct {
 	uint32           buyer_id;
 	uint32           item_quantity_available;
 	uint32           id;
+};
+
+// ServerOP_CompanionZone: world→zone on player zone-in to restore companions
+struct ServerCompanionZone_Struct {
+	uint32 owner_char_id; // character_data.id of the player who owns the companion
+	uint32 zone_id;       // destination zone ID
+};
+
+// ServerOP_CompanionDismiss: zone→world to persist companion dismiss or death
+struct ServerCompanionDismiss_Struct {
+	uint32 owner_char_id;  // character_data.id of the owner
+	uint32 companion_id;   // companion_data.id
+	uint8  is_permanent;   // 1 = permanent death (soul wipe), 0 = voluntary dismiss
 };
 
 #pragma pack(pop)

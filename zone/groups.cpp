@@ -18,6 +18,7 @@
 
 #include "groups.h"
 
+#include "companion.h"
 #include "common/eqemu_logsys.h"
 #include "common/events/player_event_logs.h"
 #include "common/repositories/character_expedition_lockouts_repository.h"
@@ -235,6 +236,24 @@ bool Group::AddMember(Mob* new_member, std::string new_member_name, uint32 chara
 		return false;
 	}
 
+	// If the group is at capacity - 1 and the incoming member is a player (not a companion),
+	// auto-dismiss any companion occupying a slot to make room for human players.
+	if (GroupCount() == MAX_GROUP_MEMBERS - 1 && new_member && new_member->IsClient()) {
+		if (RuleB(Companions, CompanionsEnabled)) {
+			for (int slot_id = 0; slot_id < MAX_GROUP_MEMBERS; ++slot_id) {
+				if (members[slot_id] && members[slot_id]->IsCompanion()) {
+					auto* companion = members[slot_id]->CastToCompanion();
+					LogInfo(
+						"Group::AddMember: auto-dismissing companion [{}] to make room for player [{}]",
+						companion->GetName(), new_member->GetCleanName()
+					);
+					companion->Suspend();
+					break; // only dismiss one; loop is needed if future max changes
+				}
+			}
+		}
+	}
+
 	if (!new_member) {
 		in_zone = false;
 	} else {
@@ -337,10 +356,15 @@ bool Group::AddMember(Mob* new_member, std::string new_member_name, uint32 chara
 			}
 		}
 
-		Group* g = new_member->CastToClient()->GetGroup();
-		if (g) {
-			g->SendHPManaEndPacketsTo(new_member);
-			g->SendHPPacketsFrom(new_member);
+		// Only send HP/mana packets when the new member is a client — calling
+		// CastToClient() on a Bot, Companion, or other NPC subclass is UB in
+		// release builds (no _EQDEBUG null check).
+		if (new_member->IsClient()) {
+			Group* g = new_member->CastToClient()->GetGroup();
+			if (g) {
+				g->SendHPManaEndPacketsTo(new_member);
+				g->SendHPPacketsFrom(new_member);
+			}
 		}
 
 	} else {
@@ -918,6 +942,28 @@ void Group::DisbandGroup(bool joinraid) {
 		Bot::UpdateGroupCastingRoles(this, true);
 	}
 
+	// Companion safety net: save and depop any companions BEFORE clearing
+	// group membership. This ensures that no matter how DisbandGroup is
+	// reached (LeaveGroup, DelMember, OnDisconnect, cross-zone, scripting),
+	// the companion is saved to DB and depoped gracefully rather than
+	// orphaned. We null the member slot BEFORE calling Zone() so that
+	// Depop()'s RemoveCompanionFromGroup() sees GetGroup()==nullptr and
+	// skips the recursive removal path. (BUG-002 fix)
+	// Use Zone() instead of Suspend() so is_suspended stays 0 and
+	// SpawnCompanionsOnZone() will restore companions on next login.
+	// (BUG-003 fix)
+	if (RuleB(Companions, CompanionsEnabled)) {
+		for (uint32 ci = 0; ci < MAX_GROUP_MEMBERS; ci++) {
+			if (members[ci] && members[ci]->IsCompanion()) {
+				Companion* comp = members[ci]->CastToCompanion();
+				comp->SetGrouped(false);
+				members[ci] = nullptr;
+				membername[ci][0] = '\0';
+				comp->Zone();
+			}
+		}
+	}
+
 	auto outapp = new EQApplicationPacket(OP_GroupUpdate, sizeof(GroupUpdate_Struct));
 
 	GroupUpdate_Struct* gu = (GroupUpdate_Struct*) outapp->pBuffer;
@@ -1264,6 +1310,20 @@ void Client::LeaveGroup() {
 		// Account for both client and merc leaving the group
 		if (GetMerc() && g == GetMerc()->GetGroup()) {
 			MemberCount -= 1;
+		}
+
+		// Account for companions leaving with the owner so a player + companion
+		// group doesn't trigger a premature DisbandGroup. Mirrors the bot/merc
+		// subtraction above. (BUG-002 fix)
+		if (RuleB(Companions, CompanionsEnabled)) {
+			for (uint32 ci = 0; ci < MAX_GROUP_MEMBERS; ci++) {
+				if (g->members[ci] && g->members[ci]->IsCompanion()) {
+					auto* companion = g->members[ci]->CastToCompanion();
+					if (companion->GetOwnerCharacterID() == CharacterID()) {
+						MemberCount -= 1;
+					}
+				}
+			}
 		}
 
 		if (RuleB(Bots, Enabled)) {

@@ -22,6 +22,7 @@
 #include "common/features.h"
 #include "common/guilds.h"
 #include "zone/bot.h"
+#include "zone/companion.h"
 #include "zone/dialogue_window.h"
 #include "zone/dynamic_zone.h"
 #include "zone/guild_mgr.h"
@@ -265,6 +266,28 @@ Bot *Entity::CastToBot()
 const Bot *Entity::CastToBot() const
 {
 	return static_cast<const Bot *>(this);
+}
+
+Companion *Entity::CastToCompanion()
+{
+#ifdef _EQDEBUG
+	if (!IsCompanion()) {
+		std::cout << "CastToCompanion error" << std::endl;
+		return 0;
+	}
+#endif
+	return static_cast<Companion *>(this);
+}
+
+const Companion *Entity::CastToCompanion() const
+{
+#ifdef _EQDEBUG
+	if (!IsCompanion()) {
+		std::cout << "CastToCompanion error" << std::endl;
+		return 0;
+	}
+#endif
+	return static_cast<const Companion *>(this);
 }
 
 EntityList::EntityList()
@@ -543,6 +566,9 @@ void EntityList::MobProcess()
 				entity_list.RemoveMerc(id);
 			} else if (mob->IsBot()) {
 				entity_list.RemoveBot(id);
+			} else if (mob->IsCompanion()) {
+				entity_list.RemoveCompanion(id);
+				entity_list.RemoveNPC(id);
 			} else if (mob->IsNPC()) {
 				entity_list.RemoveNPC(id);
 			} else {
@@ -3122,6 +3148,8 @@ void EntityList::RemoveEntity(uint16 id)
 		return;
 	else if (entity_list.RemoveBot(id))
 		return;
+	else if (entity_list.RemoveCompanion(id))
+		return;
 	else
 		entity_list.RemoveObject(id);
 }
@@ -3205,6 +3233,22 @@ void EntityList::RemoveFromHateLists(Mob *mob, bool settoone)
 			}
 		}
 		++it;
+	}
+
+	// Companions are stored in companion_list, not npc_list, so they must be
+	// processed separately. Without this, a dead enemy stays on the companion's
+	// hate list for up to 10 minutes (RemoveStaleEntries timeout), keeping
+	// IsEngaged() true and blocking OOC HP regeneration after combat ends.
+	auto cit = companion_list.begin();
+	while (cit != companion_list.end()) {
+		if (cit->second->CheckAggro(mob)) {
+			if (!settoone) {
+				cit->second->RemoveFromHateList(mob);
+			} else {
+				cit->second->SetHateAmountOnEnt(mob, 1);
+			}
+		}
+		++cit;
 	}
 }
 

@@ -3,9 +3,12 @@
 #include "lua_client.h"
 
 #include "zone/client.h"
+#include "zone/companion.h"
 #include "zone/dialogue_window.h"
 #include "zone/dynamic_zone.h"
+#include "zone/entity.h"
 #include "zone/expedition_request.h"
+#include "zone/lua_companion.h"
 #include "zone/lua_expedition.h"
 #include "zone/lua_group.h"
 #include "zone/lua_inventory.h"
@@ -14,7 +17,11 @@
 #include "zone/lua_npc.h"
 #include "zone/lua_packet.h"
 #include "zone/lua_raid.h"
+#include "zone/masterentity.h"
+#include "zone/npc.h"
 #include "zone/titles.h"
+
+extern EntityList entity_list;
 
 #include "lua.hpp"
 #include "luabind/luabind.hpp"
@@ -3625,6 +3632,82 @@ luabind::object Lua_Client::GetKeyRing(lua_State* L)
 	return lua_table;
 }
 
+// -------------------------------------------------------
+// Companion system bindings (Task 17)
+// -------------------------------------------------------
+
+Lua_Companion Lua_Client::CreateCompanion(Lua_NPC npc_lua)
+{
+	Lua_Safe_Call_Class(Lua_Companion);
+	NPC* npc = npc_lua;
+	if (!npc) {
+		return Lua_Companion(nullptr);
+	}
+
+	Companion* companion = Companion::CreateFromNPC(self, npc);
+	if (!companion) {
+		return Lua_Companion(nullptr);
+	}
+
+	// Persist to companion_data. For fresh recruitment this does an INSERT and
+	// sets m_companion_id. For re-recruitment CreateFromNPC already called Load()
+	// so this does an UPDATE. Either way the record must exist before group join
+	// or equipment/buff operations are attempted.
+	if (!companion->Save()) {
+		LogError("CreateCompanion: Save() failed for [{}] owner [{}]",
+		         companion->GetName(), self->GetName());
+		delete companion;
+		return Lua_Companion(nullptr);
+	}
+
+	// Spawn() is the single entry point for spawning companions.  It normalizes
+	// the name field so spawn packet and group window names match, adds to the
+	// entity list, starts AI, and joins the owner's group.
+	if (!companion->Spawn(self)) {
+		LogError("CreateCompanion: Spawn() failed for [{}] owner [{}]",
+		         companion->GetName(), self->GetName());
+		delete companion;
+		return Lua_Companion(nullptr);
+	}
+
+	// Depop the source NPC and start its respawn timer so the spawn point
+	// eventually re-populates with a new NPC.
+	npc->Depop(true);
+
+	LogInfo("CreateCompanion: companion [{}] spawned and joined group for owner [{}]",
+	        companion->GetName(), self->GetName());
+
+	return Lua_Companion(companion);
+}
+
+Lua_Companion Lua_Client::GetCompanionByNPCTypeID(uint32 npc_type_id)
+{
+	Lua_Safe_Call_Class(Lua_Companion);
+	uint32 char_id = self->CharacterID();
+	for (auto& [id, companion] : entity_list.GetCompanionList()) {
+		if (companion &&
+		    companion->GetOwnerCharacterID() == char_id &&
+		    companion->GetRecruitedNPCTypeID() == npc_type_id) {
+			return Lua_Companion(companion);
+		}
+	}
+	return Lua_Companion(nullptr);
+}
+
+bool Lua_Client::HasActiveCompanion(uint32 npc_type_id)
+{
+	Lua_Safe_Call_Bool();
+	uint32 char_id = self->CharacterID();
+	for (auto& [id, companion] : entity_list.GetCompanionList()) {
+		if (companion &&
+		    companion->GetOwnerCharacterID() == char_id &&
+		    companion->GetRecruitedNPCTypeID() == npc_type_id) {
+			return true;
+		}
+	}
+	return false;
+}
+
 luabind::scope lua_register_client() {
 	return luabind::class_<Lua_Client, Lua_Mob>("Client")
 	.def(luabind::constructor<>())
@@ -3709,6 +3792,7 @@ luabind::scope lua_register_client() {
 	.def("CountAugmentEquippedByID", (uint32(Lua_Client::*)(uint32))&Lua_Client::CountAugmentEquippedByID)
 	.def("CountItem", (uint32(Lua_Client::*)(uint32))&Lua_Client::CountItem)
 	.def("CountItemEquippedByID", (uint32(Lua_Client::*)(uint32))&Lua_Client::CountItemEquippedByID)
+	.def("CreateCompanion", (Lua_Companion(Lua_Client::*)(Lua_NPC))&Lua_Client::CreateCompanion)
 	.def("CreateExpedition", (Lua_Expedition(Lua_Client::*)(luabind::object))&Lua_Client::CreateExpedition)
 	.def("CreateExpedition", (Lua_Expedition(Lua_Client::*)(std::string, uint32, uint32, std::string, uint32, uint32))&Lua_Client::CreateExpedition)
 	.def("CreateExpedition", (Lua_Expedition(Lua_Client::*)(std::string, uint32, uint32, std::string, uint32, uint32, bool))&Lua_Client::CreateExpedition)
@@ -3759,6 +3843,7 @@ luabind::scope lua_register_client() {
 	.def("GetAAEXPModifier", (float(Lua_Client::*)(uint32,int16))&Lua_Client::GetAAEXPModifier)
 	.def("GetAAEXPPercentage", (int(Lua_Client::*)(void))&Lua_Client::GetAAEXPPercentage)
 	.def("GetAAExp", (uint32(Lua_Client::*)(void))&Lua_Client::GetAAExp)
+	.def("GetCompanionByNPCTypeID", (Lua_Companion(Lua_Client::*)(uint32))&Lua_Client::GetCompanionByNPCTypeID)
 	.def("GetAAPercent", (uint32(Lua_Client::*)(void))&Lua_Client::GetAAPercent)
 	.def("GetAAPoints", (int(Lua_Client::*)(void))&Lua_Client::GetAAPoints)
 	.def("GetAFK", (int(Lua_Client::*)(void))&Lua_Client::GetAFK)
@@ -3921,6 +4006,7 @@ luabind::scope lua_register_client() {
 	.def("HasDisciplineLearned", (bool(Lua_Client::*)(uint16))&Lua_Client::HasDisciplineLearned)
 	.def("HasExpeditionLockout", (bool(Lua_Client::*)(std::string, std::string))&Lua_Client::HasExpeditionLockout)
 	.def("HasItemEquippedByID", (bool(Lua_Client::*)(uint32))&Lua_Client::HasItemEquippedByID)
+	.def("HasActiveCompanion", (bool(Lua_Client::*)(uint32))&Lua_Client::HasActiveCompanion)
 	.def("HasItemOnCorpse", (bool(Lua_Client::*)(uint32))&Lua_Client::HasItemOnCorpse)
 	.def("HasPEQZoneFlag", (bool(Lua_Client::*)(uint32))&Lua_Client::HasPEQZoneFlag)
 	.def("HasRecipeLearned", (bool(Lua_Client::*)(uint32))&Lua_Client::HasRecipeLearned)

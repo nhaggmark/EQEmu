@@ -14,6 +14,8 @@ set(zone_sources
     bot_database.cpp
     bot_raid.cpp
     botspellsai.cpp
+    companion.cpp
+    companion_ai.cpp
     cheat_manager.cpp
     cli/cli_benchmark_databuckets.cpp
     cli/cli_sidecar_serve_http.cpp
@@ -127,6 +129,7 @@ set(zone_headers
     bot_command.h
     bot_database.h
     bot_structs.h
+    companion.h
     cheat_manager.h
     client.h
     client_packet.h
@@ -168,6 +171,7 @@ set(zone_headers
     lua_inventory.h
     lua_item.h
     lua_iteminst.h
+    lua_companion.h
     lua_merc.h
     lua_mob.h
     lua_mod.h
@@ -250,6 +254,7 @@ set(lua_sources
     lua_inventory.cpp
     lua_item.cpp
     lua_iteminst.cpp
+    lua_companion.cpp
     lua_merc.cpp
     lua_mob.cpp
     lua_mod.cpp

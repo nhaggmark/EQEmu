@@ -18,13 +18,18 @@
 
 #pragma once
 
+#include "common/rulesys.h"
 #include "common/types.h"
 #include "zone/event_codes.h"
 
 #include <any>
 
+class Bot;
 class Client;
+class Merc;
+class Mob;
 class NPC;
+class Zone;
 
 namespace EQ {
 	class ItemInstance;

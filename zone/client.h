@@ -1789,6 +1789,7 @@ public:
 	void SuspendMercCommand();
 	void SpawnMercOnZone();
 	void SpawnMerc(Merc* merc, bool setMaxStats);
+	void SpawnCompanionsOnZone(); // restore active companions when player zones in
 	void UpdateMercTimer();
 	void UpdateMercLevel();
 	void CheckMercSuspendTimer();

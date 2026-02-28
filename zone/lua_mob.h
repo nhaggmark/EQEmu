@@ -292,6 +292,7 @@ public:
 	void RunTo(double x, double y, double z);
 	void WalkTo(double x, double y, double z);
 	void NavigateTo(double x, double y, double z);
+	void StopMoving();
 	void StopNavigation();
 	float CalculateDistance(double x, double y, double z);
 	float CalculateDistance(Lua_Mob mob);

@@ -25,6 +25,7 @@
 #include "common/rulesys.h"
 #include "common/strings.h"
 #include "zone/bot.h"
+#include "zone/companion.h"
 #include "zone/dynamic_zone.h"
 #include "zone/queryserv.h"
 #include "zone/quest_parser_collection.h"
@@ -39,6 +40,16 @@ extern Zone* zone;
 void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 	if (RuleB(Bots, Enabled)) {
 		Bot::ProcessClientZoneChange(this);
+	}
+
+	// Save and depop companions on zone transition.
+	// Zone() writes is_suspended=0 so SpawnCompanionsOnZone() restores them
+	// in the destination zone.
+	if (RuleB(Companions, CompanionsEnabled)) {
+		auto companions = entity_list.GetCompanionsByOwnerCharacterID(CharacterID());
+		for (auto* comp : companions) {
+			comp->Zone();
+		}
 	}
 
 	bZoning = true;
