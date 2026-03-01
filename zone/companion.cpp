@@ -548,6 +548,52 @@ void Companion::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 }
 
 // ============================================================
+// Equipment appearance overrides (Bug 2)
+// ============================================================
+
+uint32 Companion::GetEquipmentMaterial(uint8 material_slot) const
+{
+	if (material_slot >= EQ::textures::materialCount) {
+		return 0;
+	}
+
+	int16 invslot = EQ::InventoryProfile::CalcSlotFromMaterial(material_slot);
+	if (invslot == INVALID_INDEX) {
+		return 0;
+	}
+
+	// Check companion's own equipment first
+	if (invslot >= EQ::invslot::EQUIPMENT_BEGIN &&
+	    invslot <= EQ::invslot::EQUIPMENT_END &&
+	    m_equipment[invslot] != 0) {
+		// Item exists in companion equipment — use Mob base class to resolve material
+		return Mob::GetEquipmentMaterial(material_slot);
+	}
+
+	// No companion equipment in this slot — fall back to NPC base appearance
+	return NPC::GetEquipmentMaterial(material_slot);
+}
+
+uint32 Companion::GetEquippedItemFromTextureSlot(uint8 material_slot) const
+{
+	if (material_slot >= EQ::textures::materialCount) {
+		return 0;
+	}
+
+	const int16 inventory_slot = EQ::InventoryProfile::CalcSlotFromMaterial(material_slot);
+	if (inventory_slot == INVALID_INDEX) {
+		return 0;
+	}
+
+	if (inventory_slot >= EQ::invslot::EQUIPMENT_BEGIN &&
+	    inventory_slot <= EQ::invslot::EQUIPMENT_END) {
+		return m_equipment[inventory_slot];
+	}
+
+	return 0;
+}
+
+// ============================================================
 // Lifecycle: Spawn
 // ============================================================
 
@@ -1010,6 +1056,9 @@ bool Companion::Load(uint32 companion_id)
 		SetMana(cd.cur_mana);
 	}
 
+	// Load equipment from companion_inventories table
+	LoadEquipment();
+
 	return true;
 }
 
@@ -1129,6 +1178,7 @@ bool Companion::GiveItem(uint32 item_id, int16 slot)
 		return false;
 	}
 	m_equipment[slot] = item_id;
+	equipment[slot] = item_id;  // sync to NPC::equipment[] for direct-access code paths
 	SendWearChange(slot);
 	SaveEquipment();
 	CalcBonuses();
@@ -1141,6 +1191,7 @@ bool Companion::RemoveItemFromSlot(int16 slot)
 		return false;
 	}
 	m_equipment[slot] = 0;
+	equipment[slot] = 0;  // sync to NPC::equipment[]
 	SendWearChange(slot);
 	SaveEquipment();
 	CalcBonuses();
@@ -1165,6 +1216,12 @@ bool Companion::LoadEquipment()
 	}
 
 	CalcBonuses();
+
+	// Sync to NPC::equipment[] for code paths that read the inherited array
+	for (int slot = EQ::invslot::EQUIPMENT_BEGIN; slot <= EQ::invslot::EQUIPMENT_END; slot++) {
+		equipment[slot] = m_equipment[slot];
+	}
+
 	return true;
 }
 
