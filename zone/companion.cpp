@@ -1179,7 +1179,10 @@ bool Companion::GiveItem(uint32 item_id, int16 slot)
 	}
 	m_equipment[slot] = item_id;
 	equipment[slot] = item_id;  // sync to NPC::equipment[] for direct-access code paths
-	SendWearChange(slot);
+	uint8 mat_slot = EQ::InventoryProfile::CalcMaterialFromSlot(slot);
+	if (mat_slot != EQ::textures::materialInvalid) {
+		SendWearChange(mat_slot);
+	}
 	SaveEquipment();
 	CalcBonuses();
 	return true;
@@ -1192,7 +1195,10 @@ bool Companion::RemoveItemFromSlot(int16 slot)
 	}
 	m_equipment[slot] = 0;
 	equipment[slot] = 0;  // sync to NPC::equipment[]
-	SendWearChange(slot);
+	uint8 mat_slot = EQ::InventoryProfile::CalcMaterialFromSlot(slot);
+	if (mat_slot != EQ::textures::materialInvalid) {
+		SendWearChange(mat_slot);
+	}
 	SaveEquipment();
 	CalcBonuses();
 	return true;
