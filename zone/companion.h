@@ -145,6 +145,8 @@ public:
 	bool AI_InCombatBuff();
 
 	virtual void FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho) override;
+	uint32 GetEquipmentMaterial(uint8 material_slot) const override;
+	uint32 GetEquippedItemFromTextureSlot(uint8 material_slot) const override;
 
 	// -------------------------------------------------------
 	// Lifecycle
