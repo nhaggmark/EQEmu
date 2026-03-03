@@ -275,6 +275,16 @@ public:
 	uint8    GetRecruitedLevel() const { return m_recruited_level; }
 	void     SetRecruitedLevel(uint8 level) { m_recruited_level = level; }
 
+	// Returns cumulative seconds active, including elapsed time since last unsuspend.
+	// When active (m_active_since > 0), adds live elapsed seconds to m_time_active.
+	// When suspended (m_active_since == 0), returns m_time_active as-is.
+	uint32   GetTimeActive() const;
+
+	// Returns the zone ID from the first entry of m_zones_visited JSON array.
+	// This is the zone where the companion was first recruited.
+	// Returns 0 if m_zones_visited is empty or unparseable.
+	uint32   GetRecruitedZoneID() const;
+
 	// Mercenary retention check (for COMPANION_TYPE_MERCENARY)
 	void     CheckMercenaryRetention();
 

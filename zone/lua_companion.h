@@ -39,6 +39,8 @@ public:
 	uint8  GetStance();          // 0=passive, 1=balanced, 2=aggressive
 	uint32 GetCompanionXP();
 	uint8  GetRecruitedLevel();
+	uint32 GetTimeActive();      // cumulative seconds active (live, includes current session)
+	uint32 GetRecruitedZoneID(); // zone ID of first zone visited (recruited zone)
 
 	// -------------------------------------------------------
 	// Owner
