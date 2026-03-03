@@ -60,6 +60,18 @@ uint8 Lua_Companion::GetRecruitedLevel()
 	return self->GetRecruitedLevel();
 }
 
+uint32 Lua_Companion::GetTimeActive()
+{
+	Lua_Safe_Call_Int();
+	return self->GetTimeActive();
+}
+
+uint32 Lua_Companion::GetRecruitedZoneID()
+{
+	Lua_Safe_Call_Int();
+	return self->GetRecruitedZoneID();
+}
+
 // -------------------------------------------------------
 // Owner
 // -------------------------------------------------------
@@ -227,7 +239,9 @@ luabind::scope lua_register_companion() {
 	.def("GetOwnerCharacterID",    &Lua_Companion::GetOwnerCharacterID)
 	.def("GetRecruitedLevel",      &Lua_Companion::GetRecruitedLevel)
 	.def("GetRecruitedNPCTypeID",  &Lua_Companion::GetRecruitedNPCTypeID)
+	.def("GetRecruitedZoneID",     &Lua_Companion::GetRecruitedZoneID)
 	.def("GetStance",              &Lua_Companion::GetStance)
+	.def("GetTimeActive",          &Lua_Companion::GetTimeActive)
 	.def("GiveAll",                &Lua_Companion::GiveAll)
 	.def("GiveItem",               &Lua_Companion::GiveItem)
 	.def("GiveSlot",               &Lua_Companion::GiveSlot)

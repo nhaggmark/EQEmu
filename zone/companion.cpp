@@ -1561,6 +1561,43 @@ void Companion::UpdateTimeActive()
 	m_active_since = 0; // mark as suspended
 }
 
+uint32 Companion::GetTimeActive() const
+{
+	uint32 total = m_time_active;
+	if (m_active_since > 0) {
+		uint32 now = static_cast<uint32>(time(nullptr));
+		if (now > m_active_since) {
+			total += (now - m_active_since);
+		}
+	}
+	return total;
+}
+
+uint32 Companion::GetRecruitedZoneID() const
+{
+	// m_zones_visited format: "[]" (empty) or "[id1,id2,...]"
+	// The first element is the recruited zone.
+	if (m_zones_visited.size() <= 2) {
+		return 0; // empty array "[]"
+	}
+	// Find first digit after the opening '['
+	size_t start = m_zones_visited.find('[');
+	if (start == std::string::npos) {
+		return 0;
+	}
+	++start; // skip '['
+	size_t end = m_zones_visited.find_first_of(",]", start);
+	if (end == std::string::npos || end == start) {
+		return 0;
+	}
+	const std::string id_str = m_zones_visited.substr(start, end - start);
+	try {
+		return static_cast<uint32>(std::stoul(id_str));
+	} catch (...) {
+		return 0;
+	}
+}
+
 // ============================================================
 // Re-recruitment (Task 23): get the re-recruit bonus
 // The bonus is a multiplier on the persuasion roll.
