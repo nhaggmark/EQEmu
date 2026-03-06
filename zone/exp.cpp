@@ -1184,12 +1184,36 @@ void Group::SplitExp(ExpSource exp_source, const uint64 exp, Mob* other) {
 	}
 
 	// Task 22: record kill on all companion group members.
-	// Companions don't receive XP through AddEXP; they track kills
-	// separately for history purposes.  The XP share to companions
-	// is handled by AddExperience() called from client.cpp on kill.
 	for (const auto& m : members) {
 		if (m && m->IsCompanion()) {
 			m->CastToCompanion()->RecordKill(other->GetNPCTypeID());
+		}
+	}
+
+	// Task 19: distribute XP to companion group members.
+	// Each companion's share is the same per-member slice the clients receive,
+	// further scaled by the XPSharePct rule (default 50%).
+	if (RuleB(Companions, XPContribute)) {
+		int xp_share_pct = RuleI(Companions, XPSharePct);
+		if (xp_share_pct < 0)   { xp_share_pct = 0; }
+		if (xp_share_pct > 100) { xp_share_pct = 100; }
+
+		if (xp_share_pct > 0) {
+			for (const auto& m : members) {
+				if (m && m->IsCompanion()) {
+					// Gray-con check per companion level against the killed mob
+					const uint8 comp_con = Mob::GetLevelCon(m->GetLevel(), other->GetLevel());
+					if (comp_con == ConsiderColor::Gray) {
+						continue;
+					}
+
+					const uint64 member_share = group_experience / member_count;
+					const uint32 companion_xp = static_cast<uint32>(member_share * static_cast<uint64>(xp_share_pct) / 100);
+					if (companion_xp > 0) {
+						m->CastToCompanion()->AddExperience(companion_xp);
+					}
+				}
+			}
 		}
 	}
 }

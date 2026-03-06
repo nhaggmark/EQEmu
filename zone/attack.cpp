@@ -2639,6 +2639,19 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		}
 	}
 
+	// Companion kills: resolve to owner client so XP, faction, tasks, and quest
+	// credit all fire correctly — matching the loot fix pattern at lines 2827-2832.
+	// Companions use m_owner_char_id / GetCompanionOwner() rather than the standard
+	// Mob ownerid field, so HasOwner() returns false for them; handle separately.
+	if (give_exp && give_exp->IsCompanion()) {
+		Client* comp_owner = give_exp->CastToCompanion()->GetCompanionOwner();
+		if (comp_owner) {
+			give_exp = comp_owner;
+		} else {
+			give_exp = nullptr;
+		}
+	}
+
 	if (give_exp && give_exp->IsTempPet() && give_exp->IsPetOwnerOfClientBot()) {
 		if (give_exp->IsNPC() && give_exp->CastToNPC()->GetSwarmOwner()) {
 			Mob* temp_owner = entity_list.GetMobID(give_exp->CastToNPC()->GetSwarmOwner());
@@ -2762,6 +2775,27 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 							)
 						) {
 							killer_mob->TrySpellOnKill(killed_level, spell);
+						}
+
+						// Solo companion XP: grant XP to companions owned by the killing player.
+						// Con check is per-companion against this NPC's level.
+						if (RuleB(Companions, XPContribute)) {
+							int xp_share_pct = RuleI(Companions, XPSharePct);
+							if (xp_share_pct < 0)   { xp_share_pct = 0; }
+							if (xp_share_pct > 100) { xp_share_pct = 100; }
+
+							if (xp_share_pct > 0) {
+								auto companions = entity_list.GetCompanionsByOwnerCharacterID(give_exp_client->CharacterID());
+								for (auto comp : companions) {
+									if (!comp) { continue; }
+									const uint8 comp_con = Mob::GetLevelCon(comp->GetLevel(), GetLevel());
+									if (comp_con == ConsiderColor::Gray) { continue; }
+									const uint32 comp_xp = static_cast<uint32>(final_exp * static_cast<uint64>(xp_share_pct) / 100);
+									if (comp_xp > 0) {
+										comp->AddExperience(comp_xp);
+									}
+								}
+							}
 						}
 					}
 				}

@@ -132,6 +132,12 @@ void Lua_Companion::AddExperience(uint32 xp)
 	self->AddExperience(xp);
 }
 
+uint32 Lua_Companion::GetXPForNextLevel()
+{
+	Lua_Safe_Call_Int();
+	return self->GetXPForNextLevel();
+}
+
 // -------------------------------------------------------
 // Soul wipe
 // -------------------------------------------------------
@@ -242,6 +248,7 @@ luabind::scope lua_register_companion() {
 	.def("GetRecruitedZoneID",     &Lua_Companion::GetRecruitedZoneID)
 	.def("GetStance",              &Lua_Companion::GetStance)
 	.def("GetTimeActive",          &Lua_Companion::GetTimeActive)
+	.def("GetXPForNextLevel",      &Lua_Companion::GetXPForNextLevel)
 	.def("GiveAll",                &Lua_Companion::GiveAll)
 	.def("GiveItem",               &Lua_Companion::GiveItem)
 	.def("GiveSlot",               &Lua_Companion::GiveSlot)

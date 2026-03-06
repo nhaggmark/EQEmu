@@ -74,7 +74,8 @@ public:
 	// -------------------------------------------------------
 	// Experience
 	// -------------------------------------------------------
-	void AddExperience(uint32 xp);
+	void   AddExperience(uint32 xp);
+	uint32 GetXPForNextLevel();
 
 	// -------------------------------------------------------
 	// Soul wipe (permanent death + ChromaDB clear signal)

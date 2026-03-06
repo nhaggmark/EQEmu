@@ -1433,8 +1433,14 @@ void Companion::AddExperience(uint32 xp)
 {
 	m_companion_xp += xp;
 
-	// Check if we can level up
-	if (CheckForLevelUp()) {
+	// Loop to handle cascading level-ups (e.g., cap released when player levels up
+	// and companion had stored XP beyond the old threshold).
+	bool leveled = false;
+	while (CheckForLevelUp()) {
+		leveled = true;
+	}
+
+	if (leveled) {
 		Client* owner = GetCompanionOwner();
 		if (owner) {
 			owner->Message(Chat::Yellow,
@@ -1448,7 +1454,7 @@ bool Companion::CheckForLevelUp()
 {
 	uint8 current_level = GetLevel();
 
-	// Companion max level = player_level - MaxLevelOffset
+	// Companion max level = player_level - MaxLevelOffset, clamped to [1, 60]
 	Client* owner = GetCompanionOwner();
 	if (!owner) {
 		return false;
@@ -1456,8 +1462,17 @@ bool Companion::CheckForLevelUp()
 
 	uint8 max_level = owner->GetLevel();
 	int offset = RuleI(Companions, MaxLevelOffset);
-	if (offset > 0 && max_level > (uint8)offset) {
+	if (offset < 0) { offset = 0; }
+	if (offset > 59) { offset = 59; }
+	if (max_level > (uint8)offset) {
 		max_level -= (uint8)offset;
+	} else {
+		max_level = 1;
+	}
+
+	// Absolute hard cap: companions may never exceed level 60 (Classic-Luclin era ceiling)
+	if (max_level > 60) {
+		max_level = 60;
 	}
 
 	if (current_level >= max_level) {
@@ -1478,6 +1493,10 @@ bool Companion::CheckForLevelUp()
 
 	// Reload spell list for new level
 	LoadCompanionSpells();
+
+	// Restore HP and mana to full as a level-up reward
+	SetHP(GetMaxHP());
+	SetMana(GetMaxMana());
 
 	// Save progress
 	Save();
