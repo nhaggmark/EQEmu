@@ -4598,6 +4598,11 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 		eqFilterType filter;
 		Mob* skip = attacker;
 		Mob* owner = attacker ? attacker->GetOwner() : nullptr;
+		// Companion-specific: use GetCompanionOwner() since companions
+		// do not use the standard ownerid/petid mechanism
+		if (!owner && attacker && attacker->IsCompanion()) {
+			owner = static_cast<Companion*>(attacker->CastToNPC())->GetCompanionOwner();
+		}
 		if (attacker && owner && !attacker->IsBot()) {
 			//attacker is a pet, let pet owners see their pet's damage
 			if (owner->IsClient()) {
@@ -4767,6 +4772,15 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 				//I dont think any filters apply to damage affecting us
 				if (IsClient()) {
 					CastToClient()->QueuePacket(&p);
+				}
+
+				// Companion-specific: send damage-to-companion packets to the
+				// companion's owner with FilterPetHits so they see damage taken
+				if (IsCompanion()) {
+					Client* comp_owner = static_cast<Companion*>(CastToNPC())->GetCompanionOwner();
+					if (comp_owner) {
+						comp_owner->QueuePacket(&p, true, Client::CLIENT_CONNECTED, FilterPetHits);
+					}
 				}
 
 				// Send normal message to observers
