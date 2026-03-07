@@ -91,6 +91,12 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 
 	memset(m_equipment, 0, sizeof(m_equipment));
 
+	// Initialize m_inv so CalcItemBonuses() can read equipped items via GetInv().GetItem().
+	// Companions are non-PC entities; use MobVersion::NPC (same slot layout as NPCs).
+	// Bot uses MobVersion::Bot — NPC is appropriate here since companions are NPC-derived.
+	m_inv.SetInventoryVersion(EQ::versions::MobVersion::NPC);
+	m_inv.SetGMInventory(false);
+
 	// Disable retention check for companion-type (only mercs need it)
 	if (m_companion_type == COMPANION_TYPE_COMPANION) {
 		m_retention_check_timer.Disable();
@@ -320,6 +326,25 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 {
 	// Let the base NPC death handling run first (creates corpse, etc.)
 	bool result = NPC::Death(killer_mob, damage, spell_id, attack_skill, killed_by, is_buff_tic);
+
+	// Equipment persistence on death: if the rule is false, clear all equipment and
+	// return it to the owner. Default is true (equipment survives death).
+	if (!RuleB(Companions, EquipmentPersistsThroughDeath)) {
+		Client* equip_owner = GetCompanionOwner();
+		for (int slot = EQ::invslot::EQUIPMENT_BEGIN; slot <= EQ::invslot::EQUIPMENT_END; ++slot) {
+			if (m_equipment[slot] != 0) {
+				uint32 item_id = m_equipment[slot];
+				m_equipment[slot] = 0;
+				equipment[slot] = 0;
+				m_inv.DeleteItem(static_cast<int16>(slot));
+				if (equip_owner) {
+					equip_owner->SummonItem(item_id);
+				}
+			}
+		}
+		SaveEquipment();
+		CalcBonuses();
+	}
 
 	// Save companion HP as 0 so resurrection is possible
 	Client* owner = GetCompanionOwner();
@@ -1179,6 +1204,15 @@ bool Companion::GiveItem(uint32 item_id, int16 slot)
 	}
 	m_equipment[slot] = item_id;
 	equipment[slot] = item_id;  // sync to NPC::equipment[] for direct-access code paths
+
+	// Populate m_inv so CalcItemBonuses() finds this item when computing stats.
+	// Bot system pattern: database.CreateItem → m_inv.PutItem (bot.cpp:4083).
+	EQ::ItemInstance* inst = database.CreateItem(item_id);
+	if (inst) {
+		m_inv.PutItem(slot, *inst);
+		delete inst;
+	}
+
 	uint8 mat_slot = EQ::InventoryProfile::CalcMaterialFromSlot(slot);
 	if (mat_slot != EQ::textures::materialInvalid) {
 		SendWearChange(mat_slot);
@@ -1195,6 +1229,10 @@ bool Companion::RemoveItemFromSlot(int16 slot)
 	}
 	m_equipment[slot] = 0;
 	equipment[slot] = 0;  // sync to NPC::equipment[]
+
+	// Remove from m_inv so CalcItemBonuses() stops applying the removed item's stats.
+	m_inv.DeleteItem(slot);
+
 	uint8 mat_slot = EQ::InventoryProfile::CalcMaterialFromSlot(slot);
 	if (mat_slot != EQ::textures::materialInvalid) {
 		SendWearChange(mat_slot);
@@ -1218,6 +1256,14 @@ bool Companion::LoadEquipment()
 	for (auto& row : rows) {
 		if (row.slot_id >= EQ::invslot::EQUIPMENT_BEGIN && row.slot_id <= EQ::invslot::EQUIPMENT_END) {
 			m_equipment[row.slot_id] = row.item_id;
+
+			// Populate m_inv so CalcItemBonuses() applies stats from loaded equipment.
+			// Called once per companion load (zone-in, re-recruitment, unsuspend).
+			EQ::ItemInstance* inst = database.CreateItem(row.item_id);
+			if (inst) {
+				m_inv.PutItem(static_cast<int16>(row.slot_id), *inst);
+				delete inst;
+			}
 		}
 	}
 
