@@ -91,11 +91,11 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 
 	memset(m_equipment, 0, sizeof(m_equipment));
 
-	// Initialize m_inv so CalcItemBonuses() can read equipped items via GetInv().GetItem().
+	// Initialize inventory profile so CalcItemBonuses() can read equipped items via GetInv().GetItem().
 	// Companions are non-PC entities; use MobVersion::NPC (same slot layout as NPCs).
 	// Bot uses MobVersion::Bot — NPC is appropriate here since companions are NPC-derived.
-	m_inv.SetInventoryVersion(EQ::versions::MobVersion::NPC);
-	m_inv.SetGMInventory(false);
+	GetInv().SetInventoryVersion(EQ::versions::MobVersion::NPC);
+	GetInv().SetGMInventory(false);
 
 	// Disable retention check for companion-type (only mercs need it)
 	if (m_companion_type == COMPANION_TYPE_COMPANION) {
@@ -336,7 +336,7 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 				uint32 item_id = m_equipment[slot];
 				m_equipment[slot] = 0;
 				equipment[slot] = 0;
-				m_inv.DeleteItem(static_cast<int16>(slot));
+				GetInv().DeleteItem(static_cast<int16>(slot));
 				if (equip_owner) {
 					equip_owner->SummonItem(item_id);
 				}
@@ -1205,11 +1205,11 @@ bool Companion::GiveItem(uint32 item_id, int16 slot)
 	m_equipment[slot] = item_id;
 	equipment[slot] = item_id;  // sync to NPC::equipment[] for direct-access code paths
 
-	// Populate m_inv so CalcItemBonuses() finds this item when computing stats.
-	// Bot system pattern: database.CreateItem → m_inv.PutItem (bot.cpp:4083).
+	// Populate inventory profile so CalcItemBonuses() finds this item when computing stats.
+	// Bot system pattern: database.CreateItem → GetInv().PutItem (bot.cpp:4083).
 	EQ::ItemInstance* inst = database.CreateItem(item_id);
 	if (inst) {
-		m_inv.PutItem(slot, *inst);
+		GetInv().PutItem(slot, *inst);
 		delete inst;
 	}
 
@@ -1230,8 +1230,8 @@ bool Companion::RemoveItemFromSlot(int16 slot)
 	m_equipment[slot] = 0;
 	equipment[slot] = 0;  // sync to NPC::equipment[]
 
-	// Remove from m_inv so CalcItemBonuses() stops applying the removed item's stats.
-	m_inv.DeleteItem(slot);
+	// Remove from inventory profile so CalcItemBonuses() stops applying the removed item's stats.
+	GetInv().DeleteItem(slot);
 
 	uint8 mat_slot = EQ::InventoryProfile::CalcMaterialFromSlot(slot);
 	if (mat_slot != EQ::textures::materialInvalid) {
@@ -1261,7 +1261,7 @@ bool Companion::LoadEquipment()
 			// Called once per companion load (zone-in, re-recruitment, unsuspend).
 			EQ::ItemInstance* inst = database.CreateItem(row.item_id);
 			if (inst) {
-				m_inv.PutItem(static_cast<int16>(row.slot_id), *inst);
+				GetInv().PutItem(static_cast<int16>(row.slot_id), *inst);
 				delete inst;
 			}
 		}
