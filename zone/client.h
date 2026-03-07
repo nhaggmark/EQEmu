@@ -2411,6 +2411,7 @@ private:
 	bool CanTradeFVNoDropItem();
 	void SendMobPositions();
 	void PlayerTradeEventLog(Trade *t, Trade *t2);
+	void HandleGroupChatMentions(Group* group, uint8 language, uint8 lang_skill, const char* message);
 
 	// full and partial mail key cache
 	std::string m_mail_key_full;

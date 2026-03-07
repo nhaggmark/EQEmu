@@ -1366,7 +1366,11 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 
 		Group* group = GetGroup();
 		if(group != nullptr) {
-			group->GroupMessage(this,language,lang_skill,(const char*) message);
+			if (RuleB(Companions, GroupChatAddressingEnabled) && strchr(message, '@')) {
+				HandleGroupChatMentions(group, language, lang_skill, message);
+			} else {
+				group->GroupMessage(this, language, lang_skill, (const char*) message);
+			}
 		}
 		break;
 	}
@@ -1670,6 +1674,187 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 	default: {
 		Message(0, "Channel (%i) not implemented", (uint16)chan_num);
 	}
+	}
+}
+
+void Client::HandleGroupChatMentions(Group* group, uint8 language, uint8 lang_skill, const char* message)
+{
+	// Broadcast the original message to the group so all members see what was typed.
+	group->GroupMessage(this, language, lang_skill, message);
+
+	// Prefix strip list: multi-word prefixes must come before their substrings.
+	static const std::vector<std::string> kCompanionPrefixes = {
+		"High Priestess",
+		"Guard", "Captain", "Lady", "Lord", "Sir", "Priestess",
+		"Scout", "Merchant", "Innkeeper", "Banker", "Sage", "Elder",
+		"Master", "Apprentice", "Lieutenant", "Warden", "Keeper",
+		"Deputy", "Sergeant"
+	};
+
+	// Collect resolved companions (deduplicated).
+	std::vector<Mob*> targets;
+
+	// Parse @tokens from the message. Only match @ at start-of-string or after whitespace.
+	std::string msg(message);
+	std::vector<std::string> tokens;
+	bool at_all = false;
+
+	size_t pos = 0;
+	while (pos < msg.size()) {
+		size_t at_pos = msg.find('@', pos);
+		if (at_pos == std::string::npos) break;
+
+		// @ must be at start or preceded by a space.
+		if (at_pos > 0 && msg[at_pos - 1] != ' ') {
+			pos = at_pos + 1;
+			continue;
+		}
+
+		// Extract the token: alphanumeric + underscore characters after @.
+		size_t token_start = at_pos + 1;
+		size_t token_end = token_start;
+		while (token_end < msg.size() && (isalnum((unsigned char)msg[token_end]) || msg[token_end] == '_')) {
+			++token_end;
+		}
+
+		if (token_end > token_start) {
+			std::string token = msg.substr(token_start, token_end - token_start);
+			// Lowercase the token for case-insensitive matching.
+			std::transform(token.begin(), token.end(), token.begin(),
+				[](unsigned char c) { return (char)std::tolower(c); });
+			tokens.push_back(token);
+		}
+
+		pos = token_end;
+	}
+
+	if (tokens.empty()) {
+		// No parseable @tokens found — already broadcast above, done.
+		return;
+	}
+
+	// Check for @all.
+	for (const auto& tok : tokens) {
+		if (tok == "all") {
+			at_all = true;
+			break;
+		}
+	}
+
+	// Resolve companions.
+	for (uint32 ci = 0; ci < MAX_GROUP_MEMBERS; ++ci) {
+		Mob* m = group->members[ci];
+		if (!m || !m->IsCompanion()) continue;
+
+		bool matched = false;
+
+		if (at_all) {
+			matched = true;
+		} else {
+			// Strip known prefixes from companion's clean name.
+			std::string clean_name = m->GetCleanName();
+			std::string stripped = clean_name;
+			for (const auto& prefix : kCompanionPrefixes) {
+				if (clean_name.size() > prefix.size() &&
+					strncasecmp(clean_name.c_str(), prefix.c_str(), prefix.size()) == 0 &&
+					clean_name[prefix.size()] == ' ')
+				{
+					stripped = clean_name.substr(prefix.size() + 1);
+					break;
+				}
+			}
+
+			// Lowercase stripped name for comparison.
+			std::string stripped_lower = stripped;
+			std::transform(stripped_lower.begin(), stripped_lower.end(), stripped_lower.begin(),
+				[](unsigned char c) { return (char)std::tolower(c); });
+
+			// Check each token against stripped name (substring match).
+			for (const auto& tok : tokens) {
+				if (tok == "all") continue;
+				if (stripped_lower.find(tok) != std::string::npos) {
+					matched = true;
+					break;
+				}
+			}
+		}
+
+		if (matched) {
+			// Deduplicate.
+			bool already_added = false;
+			for (const auto& existing : targets) {
+				if (existing == m) { already_added = true; break; }
+			}
+			if (!already_added) targets.push_back(m);
+		}
+	}
+
+	if (targets.empty()) {
+		// No companions matched — message was already broadcast, nothing to dispatch.
+		return;
+	}
+
+	// Extract payload: everything after the last @token (strip @mentions and "and" separators).
+	// Find the rightmost @ that was parsed as a token (at word boundary).
+	size_t payload_start = 0;
+	pos = 0;
+	while (pos < msg.size()) {
+		size_t at_pos = msg.find('@', pos);
+		if (at_pos == std::string::npos) break;
+		if (at_pos > 0 && msg[at_pos - 1] != ' ') { pos = at_pos + 1; continue; }
+		size_t token_end = at_pos + 1;
+		while (token_end < msg.size() && (isalnum((unsigned char)msg[token_end]) || msg[token_end] == '_')) {
+			++token_end;
+		}
+		if (token_end > at_pos + 1) {
+			payload_start = token_end;
+		}
+		pos = token_end;
+	}
+
+	std::string payload = msg.substr(payload_start);
+
+	// Strip leading "and" separators and whitespace.
+	while (!payload.empty() && (payload[0] == ' ' || payload[0] == '\t')) {
+		payload.erase(payload.begin());
+	}
+	if (payload.size() >= 3 && strncasecmp(payload.c_str(), "and", 3) == 0 &&
+		(payload.size() == 3 || payload[3] == ' '))
+	{
+		payload = payload.substr(3);
+	}
+	while (!payload.empty() && (payload[0] == ' ' || payload[0] == '\t')) {
+		payload.erase(payload.begin());
+	}
+
+	if (payload.empty()) {
+		// No payload — message already broadcast, nothing to dispatch.
+		return;
+	}
+
+	const bool is_conversation = (payload[0] != '!');
+
+	// Dispatch to each resolved companion.
+	int dispatch_index = 0;
+	for (Mob* companion : targets) {
+		if (is_conversation) {
+			// Signal Lua to deliver the response via group chat.
+			companion->SetEntityVariable("gsay_response_channel", "group");
+
+			// For companions after the first, set a stagger delay.
+			if (dispatch_index > 0) {
+				int min_ms = RuleI(Companions, GroupChatResponseStaggerMinMS);
+				int max_ms = RuleI(Companions, GroupChatResponseStaggerMaxMS);
+				if (max_ms < min_ms) max_ms = min_ms;
+				int range = max_ms - min_ms;
+				int stagger_ms = min_ms + (range > 0 ? (zone->random.Int(0, range)) : 0);
+				companion->SetEntityVariable("gsay_stagger_ms", std::to_string(stagger_ms * dispatch_index));
+			}
+		}
+
+		const std::string payload_copy = payload;
+		parse->EventBotMercNPC(EVENT_SAY, companion, this, [payload_copy]() { return payload_copy; }, language);
+		++dispatch_index;
 	}
 }
 
