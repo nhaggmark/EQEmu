@@ -90,6 +90,8 @@ public:
 	void GiveAll(Lua_Client client);
 	// Equip item into companion slot (slot = EQ::invslot::EQUIPMENT slot ID 0-22)
 	bool GiveItem(uint32 item_id, int16 slot);
+	// Returns item ID equipped in the given slot, or 0 if the slot is empty
+	uint32 GetEquipment(int slot);
 };
 
 #endif // LUA_EQEMU
