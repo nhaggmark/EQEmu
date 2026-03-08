@@ -1203,6 +1203,9 @@ RULE_INT(Companions, RecallCooldownS, 30, "Cooldown in seconds before a companio
 RULE_BOOL(Companions, GroupChatAddressingEnabled, true, "Enable @Name companion addressing via /gsay group chat")
 RULE_INT(Companions, GroupChatResponseStaggerMinMS, 1000, "Minimum stagger delay in ms between companion LLM responses in group chat")
 RULE_INT(Companions, GroupChatResponseStaggerMaxMS, 2000, "Maximum stagger delay in ms between companion LLM responses in group chat")
+RULE_BOOL(Companions, EnforceClassRestrictions, true, "Enforce class-based item restrictions when equipping items on companions")
+RULE_BOOL(Companions, EnforceRaceRestrictions, true, "Enforce race-based item restrictions when equipping items on companions")
+RULE_BOOL(Companions, EquipmentPersistsThroughDeath, true, "If true, companion equipment is retained after death (not dropped on corpse)")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

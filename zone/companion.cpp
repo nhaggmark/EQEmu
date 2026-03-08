@@ -91,6 +91,12 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 
 	memset(m_equipment, 0, sizeof(m_equipment));
 
+	// Initialize inventory profile so CalcItemBonuses() can read equipped items via GetInv().GetItem().
+	// Companions are non-PC entities; use MobVersion::NPC (same slot layout as NPCs).
+	// Bot uses MobVersion::Bot — NPC is appropriate here since companions are NPC-derived.
+	GetInv().SetInventoryVersion(EQ::versions::MobVersion::NPC);
+	GetInv().SetGMInventory(false);
+
 	// Disable retention check for companion-type (only mercs need it)
 	if (m_companion_type == COMPANION_TYPE_COMPANION) {
 		m_retention_check_timer.Disable();
@@ -320,6 +326,25 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 {
 	// Let the base NPC death handling run first (creates corpse, etc.)
 	bool result = NPC::Death(killer_mob, damage, spell_id, attack_skill, killed_by, is_buff_tic);
+
+	// Equipment persistence on death: if the rule is false, clear all equipment and
+	// return it to the owner. Default is true (equipment survives death).
+	if (!RuleB(Companions, EquipmentPersistsThroughDeath)) {
+		Client* equip_owner = GetCompanionOwner();
+		for (int slot = EQ::invslot::EQUIPMENT_BEGIN; slot <= EQ::invslot::EQUIPMENT_END; ++slot) {
+			if (m_equipment[slot] != 0) {
+				uint32 item_id = m_equipment[slot];
+				m_equipment[slot] = 0;
+				equipment[slot] = 0;
+				GetInv().DeleteItem(static_cast<int16>(slot));
+				if (equip_owner) {
+					equip_owner->SummonItem(item_id);
+				}
+			}
+		}
+		SaveEquipment();
+		CalcBonuses();
+	}
 
 	// Save companion HP as 0 so resurrection is possible
 	Client* owner = GetCompanionOwner();
@@ -1179,6 +1204,15 @@ bool Companion::GiveItem(uint32 item_id, int16 slot)
 	}
 	m_equipment[slot] = item_id;
 	equipment[slot] = item_id;  // sync to NPC::equipment[] for direct-access code paths
+
+	// Populate inventory profile so CalcItemBonuses() finds this item when computing stats.
+	// Bot system pattern: database.CreateItem → GetInv().PutItem (bot.cpp:4083).
+	EQ::ItemInstance* inst = database.CreateItem(item_id);
+	if (inst) {
+		GetInv().PutItem(slot, *inst);
+		delete inst;
+	}
+
 	uint8 mat_slot = EQ::InventoryProfile::CalcMaterialFromSlot(slot);
 	if (mat_slot != EQ::textures::materialInvalid) {
 		SendWearChange(mat_slot);
@@ -1195,6 +1229,10 @@ bool Companion::RemoveItemFromSlot(int16 slot)
 	}
 	m_equipment[slot] = 0;
 	equipment[slot] = 0;  // sync to NPC::equipment[]
+
+	// Remove from inventory profile so CalcItemBonuses() stops applying the removed item's stats.
+	GetInv().DeleteItem(slot);
+
 	uint8 mat_slot = EQ::InventoryProfile::CalcMaterialFromSlot(slot);
 	if (mat_slot != EQ::textures::materialInvalid) {
 		SendWearChange(mat_slot);
@@ -1218,6 +1256,14 @@ bool Companion::LoadEquipment()
 	for (auto& row : rows) {
 		if (row.slot_id >= EQ::invslot::EQUIPMENT_BEGIN && row.slot_id <= EQ::invslot::EQUIPMENT_END) {
 			m_equipment[row.slot_id] = row.item_id;
+
+			// Populate m_inv so CalcItemBonuses() applies stats from loaded equipment.
+			// Called once per companion load (zone-in, re-recruitment, unsuspend).
+			EQ::ItemInstance* inst = database.CreateItem(row.item_id);
+			if (inst) {
+				GetInv().PutItem(static_cast<int16>(row.slot_id), *inst);
+				delete inst;
+			}
 		}
 	}
 
@@ -1289,28 +1335,28 @@ static int16 SlotNameToSlotID(const std::string& slot_name)
 	std::string lower = slot_name;
 	for (auto& c : lower) { c = static_cast<char>(tolower(static_cast<unsigned char>(c))); }
 
-	if (lower == "charm")                          return EQ::invslot::slotCharm;
-	if (lower == "ear1" || lower == "ear 1")       return EQ::invslot::slotEar1;
-	if (lower == "head")                           return EQ::invslot::slotHead;
-	if (lower == "face")                           return EQ::invslot::slotFace;
-	if (lower == "ear2" || lower == "ear 2")       return EQ::invslot::slotEar2;
-	if (lower == "neck")                           return EQ::invslot::slotNeck;
-	if (lower == "shoulder" || lower == "shoulders") return EQ::invslot::slotShoulders;
-	if (lower == "arms")                           return EQ::invslot::slotArms;
-	if (lower == "back")                           return EQ::invslot::slotBack;
-	if (lower == "wrist1" || lower == "wrist 1")   return EQ::invslot::slotWrist1;
-	if (lower == "wrist2" || lower == "wrist 2")   return EQ::invslot::slotWrist2;
-	if (lower == "range")                          return EQ::invslot::slotRange;
-	if (lower == "hands")                          return EQ::invslot::slotHands;
-	if (lower == "primary" || lower == "weapon" || lower == "mainhand") return EQ::invslot::slotPrimary;
-	if (lower == "secondary" || lower == "offhand") return EQ::invslot::slotSecondary;
-	if (lower == "finger1" || lower == "finger 1" || lower == "ring1") return EQ::invslot::slotFinger1;
-	if (lower == "finger2" || lower == "finger 2" || lower == "ring2") return EQ::invslot::slotFinger2;
-	if (lower == "chest" || lower == "body")       return EQ::invslot::slotChest;
-	if (lower == "legs")                           return EQ::invslot::slotLegs;
-	if (lower == "feet" || lower == "boots")       return EQ::invslot::slotFeet;
-	if (lower == "waist" || lower == "belt")       return EQ::invslot::slotWaist;
-	if (lower == "ammo")                           return EQ::invslot::slotAmmo;
+	if (lower == "charm")                                                    return EQ::invslot::slotCharm;
+	if (lower == "ear1" || lower == "ear 1")                                return EQ::invslot::slotEar1;
+	if (lower == "head" || lower == "helm" || lower == "helmet")            return EQ::invslot::slotHead;
+	if (lower == "face" || lower == "mask")                                  return EQ::invslot::slotFace;
+	if (lower == "ear2" || lower == "ear 2")                                return EQ::invslot::slotEar2;
+	if (lower == "neck" || lower == "necklace")                             return EQ::invslot::slotNeck;
+	if (lower == "shoulder" || lower == "shoulders")                        return EQ::invslot::slotShoulders;
+	if (lower == "arms" || lower == "arm")                                  return EQ::invslot::slotArms;
+	if (lower == "back" || lower == "cloak" || lower == "cape")             return EQ::invslot::slotBack;
+	if (lower == "wrist1" || lower == "wrist 1" || lower == "leftwrist")    return EQ::invslot::slotWrist1;
+	if (lower == "wrist2" || lower == "wrist 2" || lower == "rightwrist")   return EQ::invslot::slotWrist2;
+	if (lower == "range" || lower == "ranged" || lower == "bow")            return EQ::invslot::slotRange;
+	if (lower == "hands" || lower == "hand" || lower == "gloves")           return EQ::invslot::slotHands;
+	if (lower == "primary" || lower == "weapon" || lower == "mainhand" || lower == "main") return EQ::invslot::slotPrimary;
+	if (lower == "secondary" || lower == "offhand" || lower == "off")       return EQ::invslot::slotSecondary;
+	if (lower == "finger1" || lower == "finger 1" || lower == "ring1" || lower == "leftfinger")  return EQ::invslot::slotFinger1;
+	if (lower == "finger2" || lower == "finger 2" || lower == "ring2" || lower == "rightfinger") return EQ::invslot::slotFinger2;
+	if (lower == "chest" || lower == "body" || lower == "torso")            return EQ::invslot::slotChest;
+	if (lower == "legs" || lower == "leg")                                  return EQ::invslot::slotLegs;
+	if (lower == "feet" || lower == "boots" || lower == "foot")             return EQ::invslot::slotFeet;
+	if (lower == "waist" || lower == "belt")                                return EQ::invslot::slotWaist;
+	if (lower == "ammo" || lower == "ammunition" || lower == "arrows")      return EQ::invslot::slotAmmo;
 
 	return EQ::invslot::SLOT_INVALID;
 }
@@ -1321,24 +1367,41 @@ void Companion::ShowEquipment(Client* client)
 		return;
 	}
 
-	client->Message(Chat::Yellow,
-	    "--- %s's equipment ---", GetCleanName());
+	client->Message(Chat::Yellow, "%s's Equipment:", GetCleanName());
 
-	bool any = false;
-	for (int slot = EQ::invslot::EQUIPMENT_BEGIN; slot <= EQ::invslot::EQUIPMENT_END; ++slot) {
-		if (m_equipment[slot] == 0) {
-			continue;
+	// 19-slot display order per PRD. Charm, Ear1, Ear2 are omitted from display
+	// (still stored and apply stats, just not shown per design).
+	static const struct { int16 slot; const char* label; } kDisplaySlots[] = {
+		{ EQ::invslot::slotHead,      "Head"      },
+		{ EQ::invslot::slotFace,      "Face"      },
+		{ EQ::invslot::slotNeck,      "Neck"      },
+		{ EQ::invslot::slotShoulders, "Shoulders" },
+		{ EQ::invslot::slotChest,     "Chest"     },
+		{ EQ::invslot::slotBack,      "Back"      },
+		{ EQ::invslot::slotArms,      "Arms"      },
+		{ EQ::invslot::slotWrist1,    "Wrist 1"   },
+		{ EQ::invslot::slotWrist2,    "Wrist 2"   },
+		{ EQ::invslot::slotHands,     "Hands"     },
+		{ EQ::invslot::slotFinger1,   "Finger 1"  },
+		{ EQ::invslot::slotFinger2,   "Finger 2"  },
+		{ EQ::invslot::slotLegs,      "Legs"      },
+		{ EQ::invslot::slotFeet,      "Feet"      },
+		{ EQ::invslot::slotWaist,     "Waist"     },
+		{ EQ::invslot::slotPrimary,   "Primary"   },
+		{ EQ::invslot::slotSecondary, "Secondary" },
+		{ EQ::invslot::slotRange,     "Range"     },
+		{ EQ::invslot::slotAmmo,      "Ammo"      },
+	};
+
+	for (const auto& entry : kDisplaySlots) {
+		uint32 item_id = m_equipment[entry.slot];
+		if (item_id != 0) {
+			const EQ::ItemData* item = database.GetItem(item_id);
+			const char* item_name = item ? item->Name : "(unknown item)";
+			client->Message(Chat::White, "  %-12s %s", entry.label, item_name);
+		} else {
+			client->Message(Chat::White, "  %-12s (empty)", entry.label);
 		}
-		const EQ::ItemData* item = database.GetItem(m_equipment[slot]);
-		const char* item_name = item ? item->Name : "(unknown item)";
-		const char* slot_name = EQ::invslot::GetInvPossessionsSlotName(static_cast<int16>(slot));
-		client->Message(Chat::White, "  [%s]: %s (id: %u)",
-		    slot_name, item_name, m_equipment[slot]);
-		any = true;
-	}
-
-	if (!any) {
-		client->Message(Chat::White, "  (no equipment)");
 	}
 }
 
@@ -1355,9 +1418,9 @@ bool Companion::GiveSlot(Client* client, const std::string& slot_name)
 	int16 slot = SlotNameToSlotID(slot_name);
 	if (slot == EQ::invslot::SLOT_INVALID) {
 		client->Message(Chat::Red,
-		    "Unknown equipment slot '%s'. Valid slots: charm, ear1, head, face, ear2, neck, "
-		    "shoulder, arms, back, wrist1, wrist2, range, hands, primary, secondary, "
-		    "finger1, finger2, chest, legs, feet, waist, ammo",
+		    "Unknown slot name '%s'. Valid slots: head, face, neck, shoulders, chest, back, "
+		    "arms, wrist1, wrist2, hands, finger1, finger2, legs, feet, waist, primary, "
+		    "secondary, range, ammo",
 		    slot_name.c_str());
 		return false;
 	}

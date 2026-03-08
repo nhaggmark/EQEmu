@@ -176,6 +176,12 @@ bool Lua_Companion::GiveItem(uint32 item_id, int16 slot)
 	return self->GiveItem(item_id, slot);
 }
 
+uint32 Lua_Companion::GetEquipment(int slot)
+{
+	Lua_Safe_Call_Int();
+	return self->GetEquipment(static_cast<uint8>(slot));
+}
+
 // -------------------------------------------------------
 // Follow / Guard
 // -------------------------------------------------------
@@ -248,6 +254,7 @@ luabind::scope lua_register_companion() {
 	.def("GetRecruitedZoneID",     &Lua_Companion::GetRecruitedZoneID)
 	.def("GetStance",              &Lua_Companion::GetStance)
 	.def("GetTimeActive",          &Lua_Companion::GetTimeActive)
+	.def("GetEquipment",           &Lua_Companion::GetEquipment)
 	.def("GetXPForNextLevel",      &Lua_Companion::GetXPForNextLevel)
 	.def("GiveAll",                &Lua_Companion::GiveAll)
 	.def("GiveItem",               &Lua_Companion::GiveItem)

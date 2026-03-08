@@ -181,6 +181,7 @@ public:
 	bool GiveItem(uint32 item_id, int16 slot);
 	bool GiveSlot(Lua_Client client, std::string slot_name);
 	void GiveAll(Lua_Client client);
+	uint32 GetEquipment(int slot);
 	uint32 GetOwnerCharacterID();
 	bool HasSpecialAbilities();
 	void DeleteBucket(std::string bucket_name);
