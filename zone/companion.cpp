@@ -1658,6 +1658,11 @@ bool Companion::CheckForLevelUp()
 	SetHP(GetMaxHP());
 	SetMana(GetMaxMana());
 
+	// Notify clients of HP/level changes so the group window updates correctly.
+	// Matches the bot level-up pattern (bot.cpp:4015-4016).
+	SendHPUpdate();
+	SendAppearancePacket(AppearanceType::WhoLevel, new_level, true, true);
+
 	// Save progress
 	Save();
 
