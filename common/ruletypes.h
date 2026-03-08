@@ -1206,6 +1206,8 @@ RULE_INT(Companions, GroupChatResponseStaggerMaxMS, 2000, "Maximum stagger delay
 RULE_BOOL(Companions, EnforceClassRestrictions, true, "Enforce class-based item restrictions when equipping items on companions")
 RULE_BOOL(Companions, EnforceRaceRestrictions, true, "Enforce race-based item restrictions when equipping items on companions")
 RULE_BOOL(Companions, EquipmentPersistsThroughDeath, true, "If true, companion equipment is retained after death (not dropped on corpse)")
+RULE_INT(Companions, AggressiveScanRadius, 75, "Distance in game units that Aggressive stance scans for hostile targets")
+RULE_BOOL(Companions, CompanionFleeEnabled, true, "Whether companions retain NPC flee behavior after recruitment")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY
