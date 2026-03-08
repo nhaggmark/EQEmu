@@ -401,6 +401,15 @@ bool Mob::CheckWillAggro(Mob *mob) {
 		return false;
 	}
 
+	/**
+	 * Companions shouldn't initiate faction-based aggro scanning.
+	 * They use m_owner_char_id not the NPC owner system, so GetOwner()
+	 * above doesn't protect them.
+	 */
+	if (IsCompanion()) {
+		return false;
+	}
+
 	Mob* pet_owner = mob->GetOwner();
 
 	if (pet_owner && pet_owner->IsOfClientBot()) {

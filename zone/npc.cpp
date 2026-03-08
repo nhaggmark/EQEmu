@@ -773,6 +773,7 @@ bool NPC::Process()
 	}
 
 	if (assist_timer.Check() && IsEngaged() && !Charmed() && !HasAssistAggro() &&
+	    !IsCompanion() &&  // companions don't yell for NPC help — clean break from NPC AI
 	    NPCAssistCap() < RuleI(Combat, NPCAssistCap)) {
 		// Some cases like flash of light used for aggro haven't set target
 		if (!GetTarget()) {

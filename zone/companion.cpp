@@ -19,6 +19,7 @@
 #include "companion.h"
 
 #include "common/data_bucket.h"
+#include "common/spdat.h"
 #include "common/repositories/companion_data_repository.h"
 #include "common/repositories/companion_buffs_repository.h"
 #include "common/repositories/companion_inventories_repository.h"
@@ -494,28 +495,98 @@ bool Companion::Process()
 		m_replacement_spawn_timer.Disable();
 	}
 
-	// Follow owner or engage owner's target depending on stance
+	// Suppress flee behavior when CompanionFleeEnabled rule is off
+	if (!RuleB(Companions, CompanionFleeEnabled)) {
+		currently_fleeing = false;
+	}
+
 	Client* owner = GetCompanionOwner();
+
+	// PASSIVE STANCE: disengage from all combat, never assist
+	if (m_current_stance == COMPANION_STANCE_PASSIVE) {
+		if (IsEngaged()) {
+			WipeHateList();
+			SetTarget(nullptr);
+			// Interrupt any offensive spell currently casting
+			if (IsCasting() && IsDetrimentalSpell(casting_spell_id)) {
+				InterruptSpell();
+			}
+		}
+		// Skip all assist logic — fall through to NPC::Process() for regen and movement
+		return NPC::Process();
+	}
+
+	// BALANCED STANCE: assist only when the owner or a group member is attacked
+	if (owner && m_current_stance == COMPANION_STANCE_BALANCED) {
+		Group* grp = GetGroup();
+		if (grp && !IsEngaged()) {
+			// Scan nearby NPCs and engage any that are attacking a group member
+			for (auto& [id, nearby] : GetCloseMobList(200.0f)) {
+				if (!nearby || !nearby->IsNPC() || nearby->IsCompanion()) {
+					continue;
+				}
+				for (int i = 0; i < MAX_GROUP_MEMBERS; i++) {
+					Mob* member = grp->members[i];
+					if (!member || member == this) {
+						continue;
+					}
+					if (nearby->CheckAggro(member) && IsAttackAllowed(nearby)) {
+						AddToHateList(nearby, 1);
+						SetTarget(nearby);
+						break;
+					}
+				}
+				if (IsEngaged()) {
+					break;  // found a target — stop scanning
+				}
+			}
+		}
+	}
+
+	// AGGRESSIVE STANCE: actively seek and engage hostiles near the owner
+	if (owner && m_current_stance == COMPANION_STANCE_AGGRESSIVE && !IsEngaged()) {
+		float scan_range = static_cast<float>(RuleI(Companions, AggressiveScanRadius));
+		Mob*  closest_hostile = nullptr;
+		float closest_dist_sq = scan_range * scan_range;
+
+		for (auto& [id, nearby] : GetCloseMobList(scan_range)) {
+			if (!nearby || !nearby->IsNPC() || nearby->IsCompanion()) {
+				continue;
+			}
+			if (!IsAttackAllowed(nearby)) {
+				continue;
+			}
+			// "Hostile" = threatening or worse from the owner's faction perspective
+			FACTION_VALUE fv = owner->GetReverseFactionCon(nearby);
+			if (fv != FACTION_THREATENINGLY && fv != FACTION_SCOWLS) {
+				continue;
+			}
+			float dist_sq = DistanceSquaredNoZ(m_Position, nearby->GetPosition());
+			if (dist_sq < closest_dist_sq) {
+				closest_dist_sq = dist_sq;
+				closest_hostile = nearby;
+			}
+		}
+
+		if (closest_hostile) {
+			AddToHateList(closest_hostile, 1);
+			SetTarget(closest_hostile);
+		}
+	}
+
+	// For both BALANCED and AGGRESSIVE: also assist the owner's explicit target
 	if (owner && m_current_stance != COMPANION_STANCE_PASSIVE) {
-		// If owner is in combat and we are not already engaged, assist by adding
-		// the owner's target to our hate list. Without AddToHateList, IsEngaged()
-		// stays false and the combat AI block never fires (see Bot::TryAssistOwner).
 		Mob* owner_target = owner->GetTarget();
 		if (owner_target) {
 			// Safety: companions must never assist against the owner, another
 			// companion belonging to the same owner, or any group member.
-			// This covers the case of the player pressing F1 (self-target),
-			// targeting a friendly companion, or targeting another group mate.
 			bool target_is_safe = false;
 			if (owner_target == owner) {
-				// Player targeted themselves (F1 or clicking own portrait)
 				target_is_safe = true;
 			} else if (owner_target->IsCompanion() &&
 			           static_cast<Companion*>(owner_target->CastToNPC())->GetOwnerCharacterID() == m_owner_char_id) {
-				// Player targeted another companion that belongs to the same owner
 				target_is_safe = true;
 			} else {
-				// Do not attack any other member of our group
 				Group* grp = GetGroup();
 				if (grp && grp->IsGroupMember(owner_target)) {
 					target_is_safe = true;
