@@ -574,8 +574,34 @@ bool Companion::Process()
 		}
 	}
 
-	// For both BALANCED and AGGRESSIVE: also assist the owner's explicit target
-	if (owner && m_current_stance != COMPANION_STANCE_PASSIVE) {
+	// For BALANCED: also assist when the owner is actively fighting (auto-attack on).
+	// Merely targeting a mob is not enough — the player must have engaged.
+	if (owner && m_current_stance == COMPANION_STANCE_BALANCED && !IsEngaged()) {
+		if (owner->IsClient() && owner->CastToClient()->AutoAttackEnabled()) {
+			Mob* owner_target = owner->GetTarget();
+			if (owner_target && IsAttackAllowed(owner_target)) {
+				bool target_is_safe = false;
+				if (owner_target == owner) {
+					target_is_safe = true;
+				} else if (owner_target->IsCompanion() &&
+				           static_cast<Companion*>(owner_target->CastToNPC())->GetOwnerCharacterID() == m_owner_char_id) {
+					target_is_safe = true;
+				} else {
+					Group* grp = GetGroup();
+					if (grp && grp->IsGroupMember(owner_target)) {
+						target_is_safe = true;
+					}
+				}
+				if (!target_is_safe) {
+					AddToHateList(owner_target, 1);
+					SetTarget(owner_target);
+				}
+			}
+		}
+	}
+
+	// For AGGRESSIVE: assist the owner's explicit target (any target, attack-on-sight).
+	if (owner && m_current_stance == COMPANION_STANCE_AGGRESSIVE) {
 		Mob* owner_target = owner->GetTarget();
 		if (owner_target) {
 			// Safety: companions must never assist against the owner, another
