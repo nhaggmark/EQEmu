@@ -1063,6 +1063,11 @@ void Client::Handle_Connect_OP_ClientReady(const EQApplicationPacket *app)
 	if (!Spawned())
 		SendZoneInPackets();
 	CompleteConnect();
+	// Spawn companions AFTER CompleteConnect() so client_state == CLIENT_CONNECTED.
+	// Both spawn packets (QueueClients uses CLIENT_CONNECTED) and group packets
+	// are sent immediately and in order, preventing the group-window timing mismatch
+	// that caused BUG-008 (companions dropping from group interface when zoning).
+	SpawnCompanionsOnZone();
 	SendHPUpdate();
 }
 
@@ -1164,10 +1169,6 @@ void Client::Handle_Connect_OP_SendExpZonein(const EQApplicationPacket *app)
 	if (ClientVersion() < EQ::versions::ClientVersion::SoF)
 	{
 		SendZoneInPackets();
-
-		// Titanium never sends OP_WorldObjectsSent, so spawn companions here
-		// instead of Handle_Connect_OP_WorldObjectsSent which is SoF+ only.
-		SpawnCompanionsOnZone();
 	}
 
 	return;
@@ -1238,9 +1239,6 @@ void Client::Handle_Connect_OP_WorldObjectsSent(const EQApplicationPacket *app)
 	{
 		SpawnMercOnZone();
 	}
-
-	// SoF+ companion spawn: mirrors Titanium path in Handle_Connect_OP_SendExpZonein
-	SpawnCompanionsOnZone();
 
 	return;
 }

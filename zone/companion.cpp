@@ -58,6 +58,7 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	m_current_stance        = COMPANION_STANCE_BALANCED;
 	m_suspended             = false;
 	m_depop                 = false;
+	m_is_zoning             = false;
 	m_recruited_level       = d->level;
 
 	// Spawn origin (set after recruitment, used for replacement NPC)
@@ -819,12 +820,24 @@ bool Companion::Unsuspend(bool set_max_stats)
 
 void Companion::Zone()
 {
+	// Guard against re-entrant calls. DisbandGroup() (called from
+	// RemoveCompanionFromGroup inside Depop) iterates group members and calls
+	// Zone() again on any companions it finds. Without this guard that results in
+	// double Save() + Depop() per companion. (BUG-008)
+	if (m_is_zoning) {
+		return;
+	}
+	m_is_zoning = true;
+
 	UpdateTimeActive(); // accrue elapsed seconds before saving
 	if (zone) {
 		RecordZoneVisit(zone->GetZoneID());
 	}
 	Save();
 	Depop();
+	// Note: m_is_zoning is intentionally not reset here. Once Zone() has been
+	// called the companion is being depoped; the flag stays true for the
+	// lifetime of the object to block any further re-entrant invocations.
 }
 
 // ============================================================

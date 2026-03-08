@@ -330,6 +330,7 @@ private:
 	uint8    m_current_stance;        // COMPANION_STANCE_PASSIVE/BALANCED/AGGRESSIVE
 	bool     m_suspended;             // true when saved to DB but not spawned
 	bool     m_depop;                 // true when this entity should be cleaned up
+	bool     m_is_zoning;             // re-entrancy guard: true during Zone() to prevent double-depop (BUG-008)
 
 	// Spawn origin (for replacement NPC, dismissal return)
 	uint32   m_spawn2_id;
