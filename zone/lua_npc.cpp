@@ -986,6 +986,15 @@ void Lua_NPC::GiveAll(Lua_Client client)
 	self->CastToCompanion()->GiveAll(client);
 }
 
+uint32 Lua_NPC::GetEquipment(int slot)
+{
+	Lua_Safe_Call_Int();
+	if (!self->IsCompanion()) {
+		return 0;
+	}
+	return self->CastToCompanion()->GetEquipment(static_cast<uint8>(slot));
+}
+
 uint32 Lua_NPC::GetOwnerCharacterID()
 {
 	Lua_Safe_Call_Int();
@@ -1041,6 +1050,7 @@ luabind::scope lua_register_npc() {
 	.def("GetFollowID", (int(Lua_NPC::*)(void))&Lua_NPC::GetFollowID)
 	.def("GetGold", (uint32(Lua_NPC::*)(void))&Lua_NPC::GetGold)
 	.def("GetGrid", (int(Lua_NPC::*)(void))&Lua_NPC::GetGrid)
+	.def("GetEquipment", (uint32(Lua_NPC::*)(int))&Lua_NPC::GetEquipment)
 	.def("GiveAll", (void(Lua_NPC::*)(Lua_Client))&Lua_NPC::GiveAll)
 	.def("GiveItem", (bool(Lua_NPC::*)(uint32,int16))&Lua_NPC::GiveItem)
 	.def("GiveSlot", (bool(Lua_NPC::*)(Lua_Client,std::string))&Lua_NPC::GiveSlot)
