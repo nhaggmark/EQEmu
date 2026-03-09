@@ -2310,15 +2310,18 @@ std::vector<Companion*> EntityList::GetCompanionsByOwnerCharacterID(uint32 chara
 // ============================================================
 // Formation slot assignment
 //
-// Distributes all active companions for an owner in a 120-degree arc
-// directly behind the owner, with equal angular spacing.
+// Distributes all active companions for an owner in a 240-degree arc
+// centred directly behind the owner, with equal angular spacing.
+// The wide arc places companions to the left and right sides of the
+// owner (flanking positions) rather than clustering them directly behind.
+// The result is a V-formation with the owner at the point.
 //
 //   N=1 companions : offset = 0 (directly behind)
-//   N=2 companions : offsets at -arc/2, +arc/2
+//   N=2 companions : offsets at -arc/2, +arc/2  (left-side, right-side)
 //   N>=2 companions: step = arc / (N-1), offset[i] = -arc/2 + i*step
 //
 // Offsets are stored as EQ heading units (0-512 scale).
-// 120 degrees = 120/360 * 512 = 170.667 heading units.
+// 240 degrees = 240/360 * 512 = 341.333 heading units.
 // ============================================================
 
 void Companion::AssignFormationSlot()
@@ -2349,8 +2352,10 @@ void Companion::AssignFormationSlot()
 		}
 	}
 
-	// 120 degrees converted to EQ heading units: 120.0f / 360.0f * 512.0f
-	const float arc_width = 170.667f;
+	// 240 degrees converted to EQ heading units: 240.0f / 360.0f * 512.0f
+	// This places companions at flanking (side) positions rather than directly behind,
+	// producing a V-formation with the owner at the point.
+	const float arc_width = 341.333f;
 
 	float offset = 0.0f;
 	if (total >= 2) {
