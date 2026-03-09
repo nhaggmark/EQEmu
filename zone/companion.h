@@ -98,8 +98,10 @@ public:
 	virtual Group* GetGroup() override { return entity_list.GetGroupByMob(this); }
 
 	// Type identification
-	virtual bool IsCompanion() const override { return true; }
-	virtual bool IsNPC()       const override { return true; }
+	virtual bool IsCompanion()       const override { return true; }
+	virtual bool IsNPC()             const override { return true; }
+	virtual bool IsOfClientBot()     const override { return true; }
+	virtual bool IsOfClientBotMerc() const override { return true; }
 
 	// -------------------------------------------------------
 	// AI Virtual Overrides

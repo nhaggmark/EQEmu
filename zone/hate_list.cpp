@@ -495,6 +495,13 @@ Mob *HateList::GetMobWithMostHateOnList(
 			}
 
 			if (!is_top_client_type) {
+				if (top_hate->IsCompanion()) {
+					is_top_client_type          = true;
+					top_client_type_in_range = top_hate;
+				}
+			}
+
+			if (!is_top_client_type) {
 				if (top_hate->GetSpecialAbility(SpecialAbility::AllowedToTank)) {
 					is_top_client_type          = true;
 					top_client_type_in_range = top_hate;
