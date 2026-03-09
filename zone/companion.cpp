@@ -34,6 +34,8 @@
 #include "zone/string_ids.h"
 #include "zone/zone.h"
 
+#include <algorithm>
+#include <cmath>
 #include <fmt/format.h>
 
 extern volatile bool is_zone_loaded;
@@ -918,7 +920,16 @@ void Companion::Depop(bool start_spawn_timer)
 		RemoveCompanionFromGroup(this, GetGroup());
 	}
 
+	// Capture owner id before removal from entity list so the reassignment
+	// call below only sees the companions that remain active.
+	uint32 owner_char_id = m_owner_char_id;
 	entity_list.RemoveCompanion(GetID());
+
+	// Reassign formation slots for remaining companions now that this one
+	// has left the entity list.
+	if (owner_char_id != 0) {
+		ReassignFormationSlots(owner_char_id);
+	}
 
 	if (HasPet()) {
 		GetPet()->Depop();
@@ -1043,6 +1054,7 @@ bool Companion::CompanionJoinClientGroup()
 		g->AddToGroup(owner);
 		g->AddToGroup(this);
 		SetFollowID(owner->GetID());
+		ReassignFormationSlots(m_owner_char_id);
 
 		LogInfo("Companion [{}] joined new group with [{}]", GetName(), owner->GetName());
 	} else {
@@ -1062,6 +1074,7 @@ bool Companion::CompanionJoinClientGroup()
 			g->AddToGroup(this);
 
 			SetFollowID(owner->GetID());
+			ReassignFormationSlots(m_owner_char_id);
 			LogInfo("Companion [{}] joined existing group with [{}]", GetName(), owner->GetName());
 		} else {
 			Suspend();
@@ -1081,6 +1094,7 @@ bool Companion::AddCompanionToGroup(Companion* companion, Group* group)
 	if (companion->HasGroup()) {
 		if (companion->GetGroup() == group && companion->GetCompanionOwner()) {
 			companion->SetFollowID(companion->GetCompanionOwner()->GetID());
+			ReassignFormationSlots(companion->GetOwnerCharacterID());
 			return true;
 		}
 		RemoveCompanionFromGroup(companion, companion->GetGroup());
@@ -1098,6 +1112,7 @@ bool Companion::AddCompanionToGroup(Companion* companion, Group* group)
 		group->AddToGroup(companion);
 
 		companion->SetFollowID(companion->GetCompanionOwner()->GetID());
+		ReassignFormationSlots(companion->GetOwnerCharacterID());
 		return true;
 	}
 
@@ -2115,6 +2130,71 @@ std::vector<Companion*> EntityList::GetCompanionsByOwnerCharacterID(uint32 chara
 		}
 	}
 	return result;
+}
+
+// ============================================================
+// Formation slot assignment
+//
+// Distributes all active companions for an owner in a 120-degree arc
+// directly behind the owner, with equal angular spacing.
+//
+//   N=1 companions : offset = 0 (directly behind)
+//   N=2 companions : offsets at -arc/2, +arc/2
+//   N>=2 companions: step = arc / (N-1), offset[i] = -arc/2 + i*step
+//
+// Offsets are stored as EQ heading units (0-512 scale).
+// 120 degrees = 120/360 * 512 = 170.667 heading units.
+// ============================================================
+
+void Companion::AssignFormationSlot()
+{
+	Client* owner = GetCompanionOwner();
+	if (!owner) {
+		return;
+	}
+
+	auto companions = entity_list.GetCompanionsByOwnerCharacterID(m_owner_char_id);
+	int total = static_cast<int>(companions.size());
+	if (total == 0) {
+		return;
+	}
+
+	// Sort by companion_id for consistent, deterministic slot ordering.
+	std::sort(companions.begin(), companions.end(),
+		[](const Companion* a, const Companion* b) {
+			return a->GetCompanionID() < b->GetCompanionID();
+		});
+
+	// Find this companion's index in the sorted list.
+	int my_slot = 0;
+	for (int i = 0; i < total; i++) {
+		if (companions[i] == this) {
+			my_slot = i;
+			break;
+		}
+	}
+
+	// 120 degrees converted to EQ heading units: 120.0f / 360.0f * 512.0f
+	const float arc_width = 170.667f;
+
+	float offset = 0.0f;
+	if (total >= 2) {
+		float step = arc_width / static_cast<float>(total - 1);
+		offset = -arc_width / 2.0f + static_cast<float>(my_slot) * step;
+	}
+
+	SetFollowAngleOffset(offset);
+	SetFollowFormationDistance(static_cast<float>(RuleI(Companions, FormationDistance)));
+}
+
+void Companion::ReassignFormationSlots(uint32 owner_char_id)
+{
+	auto companions = entity_list.GetCompanionsByOwnerCharacterID(owner_char_id);
+	for (auto* c : companions) {
+		if (c) {
+			c->AssignFormationSlot();
+		}
+	}
 }
 
 // ============================================================

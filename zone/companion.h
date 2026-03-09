@@ -166,6 +166,12 @@ public:
 	bool CompanionJoinClientGroup();
 	static void CompanionGroupSay(Mob* speaker, const char* msg, ...);
 
+	// Formation slot assignment: distributes companions in a 120-degree arc behind the owner.
+	// AssignFormationSlot() recalculates all active companions for this companion's owner.
+	// ReassignFormationSlots() is the static entry point used when the group composition changes.
+	void AssignFormationSlot();
+	static void ReassignFormationSlots(uint32 owner_char_id);
+
 	// -------------------------------------------------------
 	// Persistence
 	// -------------------------------------------------------
