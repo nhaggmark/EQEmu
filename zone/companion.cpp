@@ -556,6 +556,37 @@ void Companion::UpdateCombatPositioning()
 
 	Mob* target = GetTarget();
 
+	// Safety guard: never run combat positioning against the owner or any group
+	// member.  This can happen when the hate list has a stale entry pointing at
+	// the owner (e.g., because a previous tick set the target before the hate
+	// list was pruned) or when NPC::AI_Process() re-sets the target from the
+	// hate list to someone that should not be attacked.  If we detect the
+	// target is the owner or a group member, scrub it from the hate list,
+	// clear the target, and bail out so the companion returns to normal
+	// formation-follow behaviour.
+	Client* positioning_owner = GetCompanionOwner();
+	if (positioning_owner) {
+		if (target == positioning_owner) {
+			RemoveFromHateList(target);
+			SetTarget(nullptr);
+			return;
+		}
+		Group* pos_grp = GetGroup();
+		if (pos_grp && pos_grp->IsGroupMember(target)) {
+			RemoveFromHateList(target);
+			SetTarget(nullptr);
+			return;
+		}
+	}
+
+	// Additional guard: if we have a follow target (formation-follow) but the
+	// target is NOT a genuine hostile NPC, skip combat positioning entirely.
+	// This prevents the rogue (and casters) from running class-specific combat
+	// movement against non-enemy entities during normal follow.
+	if (GetFollowID() && (!target->IsNPC() || target->IsCompanion())) {
+		return;
+	}
+
 	switch (m_combat_role) {
 		case COMBAT_ROLE_MELEE_TANK:
 		case COMBAT_ROLE_MELEE_DPS:
