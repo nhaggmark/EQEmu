@@ -722,6 +722,9 @@ public:
 	//Movement
 	inline bool IsMoving() const { return moving; }
 	virtual void SetMoving(bool move) { moving = move; m_Delta = glm::vec4(); }
+	// Companion combat positioning — set by Companion::UpdateCombatPositioning()
+	bool IsHoldingCombatPosition() const { return m_hold_combat_position; }
+	void SetHoldCombatPosition(bool v) { m_hold_combat_position = v; }
 	virtual void GoToBind(uint8 bindnum = 0) { }
 	virtual void Gate(uint8 bindnum = 0);
 	virtual int GetWalkspeed() const { return(_GetWalkSpeed()); }
@@ -1548,6 +1551,10 @@ protected:
 	int16 Vulnerability_Mod[HIGHEST_RESIST+2];
 	bool m_AllowBeneficial;
 	bool m_DisableMelee;
+	// Set by Companion::UpdateCombatPositioning() each tick when the companion is
+	// at its desired combat position (spell range for casters, behind mob for rogues).
+	// Checked in Mob::AI_Process() to suppress the default pursue-to-melee movement.
+	bool m_hold_combat_position = false;
 
 	bool isgrouped;
 	bool israidgrouped;

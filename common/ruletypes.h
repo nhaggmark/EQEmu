@@ -1209,6 +1209,8 @@ RULE_BOOL(Companions, EquipmentPersistsThroughDeath, true, "If true, companion e
 RULE_INT(Companions, AggressiveScanRadius, 75, "Distance in game units that Aggressive stance scans for hostile targets")
 RULE_BOOL(Companions, CompanionFleeEnabled, true, "Whether companions retain NPC flee behavior after recruitment")
 RULE_INT(Companions, FormationDistance, 15, "Distance in game units that companions follow behind the player in formation")
+RULE_INT(Companions, CasterCombatRange, 70, "Distance in game units that caster/healer companions maintain from targets in combat (0 = use default melee behavior)")
+RULE_BOOL(Companions, RogueBehindMob, true, "Whether rogue companions attempt to position behind their target to enable backstab")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

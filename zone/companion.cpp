@@ -111,6 +111,9 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	m_death_despawn_timer.Disable();
 	m_replacement_spawn_timer.Disable();
 
+	// Determine combat role from class for positioning logic
+	m_combat_role = DetermineRoleFromClass(GetClass());
+
 	// Initialize AI based on class
 	if (GetClass() == Class::Rogue) {
 		m_evade_timer.Start();
@@ -490,6 +493,141 @@ void Companion::AI_Stop()
 	NPC::AI_Stop();
 }
 
+// ============================================================
+// Combat Role Classification
+// ============================================================
+
+CompanionCombatRole Companion::DetermineRoleFromClass(uint8 class_id)
+{
+	switch (class_id) {
+		// Tanks: charge to melee, hold from front
+		case Class::Warrior:
+		case Class::Paladin:
+		case Class::ShadowKnight:
+			return COMBAT_ROLE_MELEE_TANK;
+
+		// Rogue: position behind mob for backstab
+		case Class::Rogue:
+			return COMBAT_ROLE_ROGUE;
+
+		// Melee DPS: charge to melee normally
+		case Class::Monk:
+		case Class::Berserker:
+		case Class::Beastlord:
+		case Class::Ranger:
+		case Class::Bard:
+			return COMBAT_ROLE_MELEE_DPS;
+
+		// Caster DPS: stay at spell range
+		case Class::Wizard:
+		case Class::Magician:
+		case Class::Necromancer:
+		case Class::Enchanter:
+			return COMBAT_ROLE_CASTER_DPS;
+
+		// Healers: stay at spell range
+		case Class::Cleric:
+		case Class::Druid:
+		case Class::Shaman:
+			return COMBAT_ROLE_HEALER;
+
+		default:
+			return COMBAT_ROLE_MELEE_DPS;
+	}
+}
+
+CompanionCombatRole Companion::GetCombatRole() const
+{
+	return m_combat_role;
+}
+
+// ============================================================
+// Combat Positioning
+// ============================================================
+
+void Companion::UpdateCombatPositioning()
+{
+	// Reset flag every tick — will be re-set below if we want to hold
+	m_hold_combat_position = false;
+
+	if (!IsEngaged() || !GetTarget()) {
+		return;
+	}
+
+	Mob* target = GetTarget();
+
+	switch (m_combat_role) {
+		case COMBAT_ROLE_MELEE_TANK:
+		case COMBAT_ROLE_MELEE_DPS:
+			// Default melee behavior — AI_Process handles pursuit and attacks normally
+			break;
+
+		case COMBAT_ROLE_ROGUE: {
+			if (!RuleB(Companions, RogueBehindMob)) {
+				break;
+			}
+			// If not already behind the mob, plot a position behind it and RunTo
+			if (!BehindMob(target, GetX(), GetY())) {
+				float dest_x = 0.0f, dest_y = 0.0f, dest_z = 0.0f;
+				if (PlotPositionAroundTarget(target, dest_x, dest_y, dest_z, true)) {
+					float dist_sq = DistanceSquaredNoZ(m_Position, glm::vec4(dest_x, dest_y, dest_z, 0.0f));
+					if (dist_sq > 25.0f) { // >5 units — not already at destination
+						RunTo(dest_x, dest_y, dest_z);
+					}
+					// Hold position so the default pursue doesn't override our movement
+					m_hold_combat_position = true;
+				}
+			}
+			// If already behind, let normal melee AI handle attacks (don't set hold)
+			break;
+		}
+
+		case COMBAT_ROLE_CASTER_DPS:
+		case COMBAT_ROLE_HEALER: {
+			int desired_range = RuleI(Companions, CasterCombatRange);
+			if (desired_range <= 0 || GetManaRatio() <= 10.0f) {
+				// OOM or rule disabled — fall back to default melee pursue
+				break;
+			}
+
+			float dist_sq = DistanceSquaredNoZ(m_Position, target->GetPosition());
+			float range_f  = static_cast<float>(desired_range);
+			float range_sq = range_f * range_f;
+
+			if (dist_sq <= range_sq && dist_sq >= (range_f * 0.5f) * (range_f * 0.5f)) {
+				// Within the sweet spot (50%–100% of desired range) — hold position
+				if (IsMoving()) {
+					StopNavigation();
+				}
+				FaceTarget();
+				m_hold_combat_position = true;
+			} else if (dist_sq > range_sq) {
+				// Too far from target — close to 70% of desired range
+				float desired_dist = range_f * 0.7f;
+				float dx = target->GetX() - GetX();
+				float dy = target->GetY() - GetY();
+				float len = std::sqrt(dx * dx + dy * dy);
+				if (len > 0.0f) {
+					float nx = dx / len;
+					float ny = dy / len;
+					float goal_x = GetX() + nx * (std::sqrt(dist_sq) - desired_dist);
+					float goal_y = GetY() + ny * (std::sqrt(dist_sq) - desired_dist);
+					RunTo(goal_x, goal_y, target->GetZ());
+				}
+				m_hold_combat_position = true;
+			} else {
+				// Too close (< 50% of desired range) — hold and cast; mob will move
+				if (IsMoving()) {
+					StopNavigation();
+				}
+				FaceTarget();
+				m_hold_combat_position = true;
+			}
+			break;
+		}
+	}
+}
+
 bool Companion::Process()
 {
 	// Check death despawn timer
@@ -672,6 +810,12 @@ bool Companion::Process()
 			}
 		}
 	}
+
+	// Update class-based combat positioning before NPC::Process() runs AI_Process().
+	// For casters/healers this sets m_hold_combat_position to prevent default melee
+	// pursuit. For rogues this routes them behind the target. Must run after target
+	// selection so GetTarget() is current.
+	UpdateCombatPositioning();
 
 	return NPC::Process();
 }

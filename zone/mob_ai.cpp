@@ -1340,6 +1340,13 @@ void Mob::AI_Process() {
 						FaceTarget();
 					}
 				}
+				// Companion casters/healers: hold at spell range and use full engaged cast AI
+				else if (m_hold_combat_position) {
+					if (!IsMoving()) {
+						FaceTarget();
+					}
+					AI_EngagedCastCheck();
+				}
 				// mob/npc waits until call for help complete, others can move
 				else if (AI_movement_timer->Check() && target &&
 						(GetOwnerID() || IsBot() || IsTempPet() ||

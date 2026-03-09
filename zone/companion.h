@@ -57,6 +57,15 @@ struct CompanionSpell {
 	int16  max_hp_pct;    // don't cast if target HP above this
 };
 
+// Combat role classification for positioning behavior
+enum CompanionCombatRole : uint8 {
+	COMBAT_ROLE_MELEE_TANK,  // Warrior, Paladin, Shadow Knight — charge to melee, hold front
+	COMBAT_ROLE_MELEE_DPS,   // Monk, Berserker, Beastlord, Ranger, Bard — charge to melee
+	COMBAT_ROLE_ROGUE,       // Rogue — circle behind mob for backstab
+	COMBAT_ROLE_CASTER_DPS,  // Wizard, Magician, Necromancer, Enchanter — stay at spell range
+	COMBAT_ROLE_HEALER       // Cleric, Druid, Shaman — stay at spell range
+};
+
 // ============================================================
 // Companion class
 //
@@ -115,6 +124,17 @@ public:
 	virtual bool AICastSpell(int8 iChance, uint32 iSpellTypes);
 	virtual bool AIDoSpellCast(uint16 spellid, Mob* tar, int32 mana_cost,
 	                           uint32* oDontDoAgainBefore = nullptr);
+
+	// -------------------------------------------------------
+	// Combat Positioning
+	// -------------------------------------------------------
+	// Returns the combat role for this companion based on its class.
+	CompanionCombatRole GetCombatRole() const;
+	// Classifies this companion by class and caches to m_combat_role.
+	static CompanionCombatRole DetermineRoleFromClass(uint8 class_id);
+	// Called each tick from Process() when engaged. Sets m_hold_combat_position
+	// and calls RunTo/StopNavigation as appropriate for the class role.
+	void UpdateCombatPositioning();
 
 	// -------------------------------------------------------
 	// Class-specific AI handlers (implemented in companion_ai.cpp)
@@ -335,6 +355,9 @@ private:
 	uint32   m_companion_id;          // primary key in companion_data table (0 = not yet saved)
 	uint32   m_owner_char_id;         // character_data.id of owning player
 	uint32   m_recruited_npc_type_id; // npc_types.id of the original recruited NPC
+
+	// Combat role (assigned at spawn, used by UpdateCombatPositioning)
+	CompanionCombatRole m_combat_role;
 
 	// Companion behavior
 	uint8    m_companion_type;        // COMPANION_TYPE_COMPANION or COMPANION_TYPE_MERCENARY
