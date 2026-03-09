@@ -1485,17 +1485,16 @@ void Mob::AI_Process() {
 				else {
 
 					// Compute the goal position — apply formation offset for companions.
-					// EQ heading is 0-512; adding 256 gives the reciprocal (directly behind owner).
+					// The arc is centred directly in front of the owner (owner heading, no 180° flip).
 					// Conversion to radians: (heading / 512.0f) * 6.283184f (matches mob.cpp pattern).
 					float goal_x = follow->GetX();
 					float goal_y = follow->GetY();
 					float goal_z = follow->GetZ();
 
 					if (GetFollowAngleOffset() != 0.0f || IsCompanion()) {
-						float behind_heading    = std::fmod(follow->GetHeading() + 256.0f, 512.0f);
-						float formation_heading = std::fmod(behind_heading + GetFollowAngleOffset() + 512.0f, 512.0f);
-						float radians           = (formation_heading / 512.0f) * 6.283184f;
-						float dist              = GetFollowFormationDistance();
+						float front_heading = std::fmod(follow->GetHeading() + GetFollowAngleOffset() + 512.0f, 512.0f);
+						float radians       = (front_heading / 512.0f) * 6.283184f;
+						float dist          = GetFollowFormationDistance();
 						goal_x += std::sin(radians) * dist;
 						goal_y += std::cos(radians) * dist;
 					}
