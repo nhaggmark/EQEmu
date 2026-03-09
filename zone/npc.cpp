@@ -136,6 +136,14 @@ NPC::NPC(const NPCType *npc_type_data, Spawn2 *in_respawn, const glm::vec4 &posi
 	//What is the point of this, since the names get mangled..
 	Mob *mob = entity_list.GetMob(name);
 	if (mob != nullptr) {
+		// Clear the mob from its group BEFORE removing it from the entity list.
+		// Without this, the group's members[] slot retains a dangling pointer
+		// after safe_delete, which causes use-after-free crashes in group
+		// iteration functions like QueueClients(). (BUG-011 layer-2 fix)
+		Group* g = entity_list.GetGroupByMob(mob);
+		if (g) {
+			g->MemberZoned(mob);
+		}
 		entity_list.RemoveEntity(mob->GetID());
 	}
 

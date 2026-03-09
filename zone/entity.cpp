@@ -2820,6 +2820,18 @@ bool EntityList::RemoveMob(uint16 delete_id)
 		else if (client_list.count(delete_id)) {
 			entity_list.RemoveClient(delete_id);
 		}
+
+		// Catch-all group cleanup: ensure the mob's group slot is nulled before
+		// safe_delete. Specific code paths (Companion::Death, MobProcess) already
+		// call MemberZoned(), but RemoveMob() is also invoked via RemoveEntity()
+		// from the NPC constructor's name-collision path and other indirect routes
+		// that may bypass the individual cleanup handlers. This prevents use-after-
+		// free dangling pointers in group iteration. (BUG-011 layer-3 fix)
+		Group* g = GetGroupByMob(it->second);
+		if (g) {
+			g->MemberZoned(it->second);
+		}
+
 		safe_delete(it->second);
 		if (!corpse_list.count(delete_id)) {
 			free_ids.push(it->first);

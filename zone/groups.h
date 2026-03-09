@@ -169,6 +169,12 @@ public:
 
 	bool AnyMemberHasDzLockout(const std::string& expedition, const std::string& event);
 
+	// Validates that members[index] is a live entity in entity_list.
+	// If the pointer is stale (use-after-free), nulls the slot and returns false.
+	// Replace all bare null-checks in iteration loops with this to prevent
+	// Group::QueueClients-style crashes from dangling member pointers.
+	bool ValidateMember(uint32 index);
+
 	Mob*	members[MAX_GROUP_MEMBERS] {nullptr};
 	char	membername[MAX_GROUP_MEMBERS][64] {""};
 	uint8	MemberRoles[MAX_GROUP_MEMBERS] {0};
