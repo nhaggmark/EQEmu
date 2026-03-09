@@ -1183,6 +1183,17 @@ bool Companion::Load(uint32 companion_id)
 	m_times_died            = cd.times_died;
 	m_active_since          = static_cast<uint32>(time(nullptr));
 
+	// Apply saved level if the companion has leveled past its recruited level.
+	// The constructor sets stats from npc_type->level (the original NPC's base
+	// level). If the companion earned XP and leveled up, cd.level will be higher
+	// than m_recruited_level. ScaleStatsToLevel() uses m_recruited_level (just
+	// restored above) and m_base_* (set in the constructor from npc_type) as the
+	// reference point, so it must be called after m_recruited_level is restored
+	// but before equipment bonuses are applied.
+	if (cd.level > 0 && static_cast<uint8>(cd.level) != GetLevel()) {
+		ScaleStatsToLevel(static_cast<uint8>(cd.level));
+	}
+
 	// Restore HP/mana if not suspended at max
 	if (cd.cur_hp > 0) {
 		SetHP(cd.cur_hp);
