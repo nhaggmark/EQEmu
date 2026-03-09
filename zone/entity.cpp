@@ -567,6 +567,13 @@ void EntityList::MobProcess()
 			} else if (mob->IsBot()) {
 				entity_list.RemoveBot(id);
 			} else if (mob->IsCompanion()) {
+				// Safety net: NULL out the group slot before safe_delete.
+				// Companion::Death() already calls MemberZoned(), but this guards
+				// against any path (e.g. forced depop) that bypasses Death().
+				Group* g = GetGroupByMob(mob);
+				if (g) {
+					g->MemberZoned(mob);
+				}
 				entity_list.RemoveCompanion(id);
 				entity_list.RemoveNPC(id);
 			} else if (mob->IsNPC()) {

@@ -368,6 +368,19 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 		m_death_despawn_timer.Start();
 	}
 
+	// Remove from group's members[] array BEFORE the entity cleanup pass deletes us.
+	// Without this, the group holds a dangling pointer that crashes on the next
+	// QueueClients() call. Matches how Bot::Death() calls Zone()->MemberZoned().
+	// MemberZoned() NULLs our slot without sending group-leave packets, which is
+	// correct for a dead entity (dead companions stay conceptually in the group
+	// for resurrection purposes, but the live pointer must be cleared).
+	if (HasGroup()) {
+		Group* g = GetGroup();
+		if (g) {
+			g->MemberZoned(this);
+		}
+	}
+
 	return result;
 }
 
@@ -479,6 +492,15 @@ bool Companion::Process()
 				"%s has been lost forever. They waited too long to be resurrected.",
 				GetCleanName());
 		}
+		// Safety net: ensure group slot is NULLed before we return false
+		// (entity cleanup will safe_delete us; the group must not hold our pointer).
+		if (HasGroup()) {
+			Group* g = GetGroup();
+			if (g) {
+				g->MemberZoned(this);
+			}
+		}
+
 		// Trigger soul wipe on permanent death
 		SoulWipe();
 		return false;
