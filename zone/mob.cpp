@@ -26,6 +26,7 @@
 #include "common/spdat.h"
 #include "common/strings.h"
 #include "zone/bot.h"
+#include "zone/companion.h"
 #include "zone/dialogue_window.h"
 #include "zone/mob_movement_manager.h"
 #include "zone/quest_parser_collection.h"
@@ -1750,7 +1751,7 @@ void Mob::MakeSpawnUpdate(PlayerPositionUpdateServer_Struct* spu) {
 
 void Mob::SendStatsWindow(Client* c, bool use_window)
 {
-	if (!IsOfClientBot()) {
+	if (!IsOfClientBot() || IsCompanion()) {
 		return;
 	}
 
@@ -2867,7 +2868,7 @@ void Mob::SendStatsWindow(Client* c, bool use_window)
 
 void Mob::ShowStats(Client* c)
 {
-	if (IsOfClientBot()) {
+	if (IsOfClientBot() && !IsCompanion()) {
 		SendStatsWindow(c, RuleB(Character, UseNewStatsWindow));
 	} else if (IsCorpse()) {
 		if (IsPlayerCorpse()) {
@@ -3540,6 +3541,25 @@ void Mob::ShowStats(Client* c)
 				t->GetLevel()
 			).c_str()
 		);
+
+		// Companion-specific info
+		if (t->IsCompanion()) {
+			auto* comp = t->CastToCompanion();
+			auto* owner = comp->GetCompanionOwner();
+			const auto stance_names = std::array<std::string, 3>{"Passive", "Balanced", "Aggressive"};
+			const uint8 stance = comp->GetStance();
+			const std::string stance_name = (stance < 3) ? stance_names[stance] : std::to_string(stance);
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Companion | ID: {} Owner: {} Stance: {} Type: {}",
+					comp->GetCompanionID(),
+					owner ? owner->GetCleanName() : "None",
+					stance_name,
+					comp->GetCompanionType() == 0 ? "Companion" : "Mercenary"
+				).c_str()
+			);
+		}
 	}
 }
 
