@@ -518,9 +518,16 @@ bool Companion::Process()
 		m_replacement_spawn_timer.Disable();
 	}
 
-	// Suppress flee behavior when CompanionFleeEnabled rule is off
+	// Enforce flee immunity in sync with the rule every process tick.
+	// FleeingImmunity is checked at the top of CheckFlee() (fearpath.cpp),
+	// which fires inside NPC::Process() below.  Keeping the ability set
+	// here (rather than only in Spawn) ensures runtime rule changes apply
+	// immediately and that the ability survives any buff/debuff cycle that
+	// might clear special abilities.
 	if (!RuleB(Companions, CompanionFleeEnabled)) {
-		currently_fleeing = false;
+		SetSpecialAbility(SpecialAbility::FleeingImmunity, 1);
+	} else {
+		SetSpecialAbility(SpecialAbility::FleeingImmunity, 0);
 	}
 
 	Client* owner = GetCompanionOwner();
@@ -778,6 +785,24 @@ bool Companion::Spawn(Client* owner)
 	// Start the NPC AI so the companion acts in combat, follows the owner,
 	// and casts spells.  LoadCompanionSpells() is called inside AI_Start().
 	AI_Start();
+
+	// Strip problematic special abilities inherited from the source NPC.
+	// ProcessSpecialAbilities() runs inside NPC::AI_Start() and re-applies
+	// whatever is in NPCTypedata->special_abilities.  We strip after AI_Start()
+	// so companions are never immune to melee/magic, and are never invulnerable,
+	// regardless of what the source NPC's special_abilities field contains.
+	SetSpecialAbility(SpecialAbility::MeleeImmunity, 0);
+	SetSpecialAbility(SpecialAbility::MagicImmunity, 0);
+	SetInvul(false);
+
+	// Apply flee immunity based on the rule. Using FleeingImmunity (ability 21)
+	// is more robust than clearing currently_fleeing in Process() because
+	// FleeingImmunity is checked at the top of CheckFlee() before any flee
+	// state can be set.  The rule value is re-evaluated in Process() as well
+	// so runtime changes to the rule take effect immediately.
+	if (!RuleB(Companions, CompanionFleeEnabled)) {
+		SetSpecialAbility(SpecialAbility::FleeingImmunity, 1);
+	}
 
 	// Join the owner's group (creates a new group if the owner is not already
 	// in one).  Sets follow ID so the companion trails the owner.
