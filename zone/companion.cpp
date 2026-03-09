@@ -57,6 +57,7 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	m_companion_type        = companion_type;
 	m_current_stance        = COMPANION_STANCE_BALANCED;
 	m_suspended             = false;
+	m_is_dismissed          = false;
 	m_depop                 = false;
 	m_is_zoning             = false;
 	m_recruited_level       = d->level;
@@ -151,13 +152,16 @@ Companion* Companion::CreateFromNPC(Client* owner, NPC* source_npc)
 
 	auto pos = source_npc->GetPosition();
 
-	// Check for an existing dismissed companion record (re-recruitment path).
-	// If the player previously dismissed this NPC voluntarily, restore its full
-	// state (level, XP, equipment, buffs) rather than starting fresh.
+	// Check for an existing dismissed or suspended companion record (re-recruitment path).
+	// Matches both voluntary dismissal (is_dismissed=1) and death-then-re-recruitment
+	// (is_suspended=1 with cur_hp=0) so equipment is always preserved across dismissal
+	// and death. Without matching is_suspended, a dead companion re-recruited before
+	// the despawn timer fires would fall through to the fresh-recruitment path and lose
+	// all equipment. (BUG-012)
 	auto existing = CompanionDataRepository::GetWhere(
 		database,
 		fmt::format(
-			"owner_id = {} AND npc_type_id = {} AND is_dismissed = 1 LIMIT 1",
+			"owner_id = {} AND npc_type_id = {} AND (is_dismissed = 1 OR is_suspended = 1) LIMIT 1",
 			owner->CharacterID(),
 			source_npc->GetNPCTypeID()
 		)
@@ -182,10 +186,11 @@ Companion* Companion::CreateFromNPC(Client* owner, NPC* source_npc)
 			return nullptr;
 		}
 
-		// Clear dismissed flag and activate — companion is active again.
-		// is_dismissed has no C++ member; update directly to avoid Save() overwriting
-		// other fields with stale data before the companion is fully initialized.
-		companion->m_suspended = false;
+		// Clear dismissed/suspended flags and activate — companion is active again.
+		// Reset both C++ members and the DB record so Save() writes the correct state
+		// on the next save without re-introducing stale is_dismissed/is_suspended values.
+		companion->m_suspended    = false;
+		companion->m_is_dismissed = false;
 		database.QueryDatabase(
 			fmt::format(
 				"UPDATE `companion_data` SET `is_dismissed` = 0, `is_suspended` = 0 WHERE `id` = {}",
@@ -358,10 +363,13 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 			GetCleanName(),
 			RuleI(Companions, DeathDespawnS));
 
-		// Mark companion as suspended (dead) in DB
+		// Mark companion as suspended (dead) in DB. Explicitly save equipment before
+		// the entity is cleaned up so the companion_inventories rows always reflect the
+		// current gear at the moment of death. (BUG-012)
 		SetSuspended(true);
 		m_times_died++;
 		UpdateTimeActive(); // stop accruing active time at death
+		SaveEquipment();
 		Save();
 
 		// Start the despawn timer — if not resurrected, auto-dismiss
@@ -484,12 +492,15 @@ bool Companion::Process()
 {
 	// Check death despawn timer
 	if (m_death_despawn_timer.Enabled() && m_death_despawn_timer.Check()) {
-		LogInfo("Companion [{}] death despawn timer fired — auto-dismissing", GetName());
-		// Permanent death — soul wipe for unresurrected companions
+		LogInfo("Companion [{}] death despawn timer fired — marking dismissed", GetName());
+		// Death timer expired without resurrection. Mark the companion as dismissed so
+		// the player can re-recruit and restore their companion's equipment/XP/state.
+		// SoulWipe() (permanent deletion) is reserved for explicit permanent dismissal
+		// via !dismiss permanent — not automatic death expiry. (BUG-012)
 		Client* owner = GetCompanionOwner();
 		if (owner) {
 			owner->Message(Chat::Yellow,
-				"%s has been lost forever. They waited too long to be resurrected.",
+				"%s has returned home. You can recruit them again when you find them.",
 				GetCleanName());
 		}
 		// Safety net: ensure group slot is NULLed before we return false
@@ -501,8 +512,10 @@ bool Companion::Process()
 			}
 		}
 
-		// Trigger soul wipe on permanent death
-		SoulWipe();
+		// Mark as dismissed so re-recruitment can find and restore this companion.
+		SetDismissed(true);
+		SetSuspended(true);
+		Save();
 		return false;
 	}
 
@@ -928,9 +941,12 @@ void Companion::Dismiss(bool permanent)
 		// Permanent dismissal: delete DB record, wipe soul
 		SoulWipe();
 	} else {
-		// Voluntary dismissal: mark suspended and preserve state
+		// Voluntary dismissal: mark suspended and dismissed so re-recruitment can find
+		// this record. is_dismissed=1 is the sentinel CreateFromNPC() uses to locate
+		// a previously-dismissed companion and restore its equipment/XP/state. (BUG-012)
 		// The +10% re-recruitment bonus is tracked via companion_data.dismissed_at
 		SetSuspended(true);
+		SetDismissed(true);
 		Save();
 	}
 
@@ -1174,6 +1190,7 @@ bool Companion::Save()
 	cd.cur_hp          = GetHP();
 	cd.cur_mana        = GetMana();
 	cd.is_suspended    = m_suspended ? 1 : 0;
+	cd.is_dismissed    = m_is_dismissed ? 1 : 0;
 	cd.stance          = m_current_stance;
 	cd.spawn2_id       = m_spawn2_id;
 	cd.spawngroupid    = m_spawngroupid;
@@ -1220,6 +1237,7 @@ bool Companion::Load(uint32 companion_id)
 	m_companion_type        = cd.companion_type;
 	m_current_stance        = cd.stance;
 	m_suspended             = (cd.is_suspended == 1);
+	m_is_dismissed          = (cd.is_dismissed == 1);
 	m_spawn2_id             = cd.spawn2_id;
 	m_spawngroupid          = cd.spawngroupid;
 	m_companion_xp          = static_cast<uint32>(cd.experience);

@@ -263,6 +263,9 @@ public:
 	bool     IsSuspended() const { return m_suspended; }
 	void     SetSuspended(bool suspended) { m_suspended = suspended; }
 
+	bool     IsDismissed() const { return m_is_dismissed; }
+	void     SetDismissed(bool dismissed) { m_is_dismissed = dismissed; }
+
 	bool     GetDepop() const { return m_depop; }
 
 	uint32   GetRecruitedNPCTypeID() const { return m_recruited_npc_type_id; }
@@ -331,6 +334,7 @@ private:
 	uint8    m_companion_type;        // COMPANION_TYPE_COMPANION or COMPANION_TYPE_MERCENARY
 	uint8    m_current_stance;        // COMPANION_STANCE_PASSIVE/BALANCED/AGGRESSIVE
 	bool     m_suspended;             // true when saved to DB but not spawned
+	bool     m_is_dismissed;         // true when voluntarily dismissed; enables re-recruitment lookup
 	bool     m_depop;                 // true when this entity should be cleaned up
 	bool     m_is_zoning;             // re-entrancy guard: true during Zone() to prevent double-depop (BUG-008)
 
