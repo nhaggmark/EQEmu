@@ -57,6 +57,15 @@ struct CompanionSpell {
 	int16  max_hp_pct;    // don't cast if target HP above this
 };
 
+// Combat role classification for positioning behavior
+enum CompanionCombatRole : uint8 {
+	COMBAT_ROLE_MELEE_TANK,  // Warrior, Paladin, Shadow Knight — charge to melee, hold front
+	COMBAT_ROLE_MELEE_DPS,   // Monk, Berserker, Beastlord, Ranger, Bard — charge to melee
+	COMBAT_ROLE_ROGUE,       // Rogue — circle behind mob for backstab
+	COMBAT_ROLE_CASTER_DPS,  // Wizard, Magician, Necromancer, Enchanter — stay at spell range
+	COMBAT_ROLE_HEALER       // Cleric, Druid, Shaman — stay at spell range
+};
+
 // ============================================================
 // Companion class
 //
@@ -98,8 +107,10 @@ public:
 	virtual Group* GetGroup() override { return entity_list.GetGroupByMob(this); }
 
 	// Type identification
-	virtual bool IsCompanion() const override { return true; }
-	virtual bool IsNPC()       const override { return true; }
+	virtual bool IsCompanion()       const override { return true; }
+	virtual bool IsNPC()             const override { return true; }
+	virtual bool IsOfClientBot()     const override { return true; }
+	virtual bool IsOfClientBotMerc() const override { return true; }
 
 	// -------------------------------------------------------
 	// AI Virtual Overrides
@@ -108,11 +119,23 @@ public:
 	virtual void AI_Stop() override;
 	virtual void AI_Init() override;
 	virtual bool Process() override;
+	virtual bool AI_PursueCastCheck() override;
 	virtual bool AI_EngagedCastCheck() override;
 	virtual bool AI_IdleCastCheck() override;
 	virtual bool AICastSpell(int8 iChance, uint32 iSpellTypes);
 	virtual bool AIDoSpellCast(uint16 spellid, Mob* tar, int32 mana_cost,
 	                           uint32* oDontDoAgainBefore = nullptr);
+
+	// -------------------------------------------------------
+	// Combat Positioning
+	// -------------------------------------------------------
+	// Returns the combat role for this companion based on its class.
+	CompanionCombatRole GetCombatRole() const;
+	// Classifies this companion by class and caches to m_combat_role.
+	static CompanionCombatRole DetermineRoleFromClass(uint8 class_id);
+	// Called each tick from Process() when engaged. Sets m_hold_combat_position
+	// and calls RunTo/StopNavigation as appropriate for the class role.
+	void UpdateCombatPositioning();
 
 	// -------------------------------------------------------
 	// Class-specific AI handlers (implemented in companion_ai.cpp)
@@ -164,6 +187,12 @@ public:
 	bool CompanionJoinClientGroup();
 	static void CompanionGroupSay(Mob* speaker, const char* msg, ...);
 
+	// Formation slot assignment: distributes companions in a 120-degree arc behind the owner.
+	// AssignFormationSlot() recalculates all active companions for this companion's owner.
+	// ReassignFormationSlots() is the static entry point used when the group composition changes.
+	void AssignFormationSlot();
+	static void ReassignFormationSlots(uint32 owner_char_id);
+
 	// -------------------------------------------------------
 	// Persistence
 	// -------------------------------------------------------
@@ -192,6 +221,16 @@ public:
 	// the Companions::HPRegenPerTic rule floor so companions with hp_regen_rate=0
 	// still heal between combats.
 	int64 CalcHPRegen() const;
+
+	// -------------------------------------------------------
+	// Mana Regen
+	// -------------------------------------------------------
+	// Computes the per-tic mana regeneration amount for this companion.
+	// Mirrors Bot::CalcManaRegen(): sitting non-melee casters use the meditate
+	// formula; standing uses a flat base rate.  Spell/item bonuses are included.
+	// Returns 0 for non-mana-using classes (warriors, rogues, etc.).
+	// Scaled by Character:ManaRegenMultiplier then Companions:CompanionManaRegenMult.
+	int64 CalcManaRegen();
 
 	// -------------------------------------------------------
 	// Stat Scaling
@@ -261,6 +300,9 @@ public:
 	bool     IsSuspended() const { return m_suspended; }
 	void     SetSuspended(bool suspended) { m_suspended = suspended; }
 
+	bool     IsDismissed() const { return m_is_dismissed; }
+	void     SetDismissed(bool dismissed) { m_is_dismissed = dismissed; }
+
 	bool     GetDepop() const { return m_depop; }
 
 	uint32   GetRecruitedNPCTypeID() const { return m_recruited_npc_type_id; }
@@ -311,6 +353,8 @@ protected:
 	Timer m_evade_timer;
 	Timer m_retention_check_timer;
 	Timer m_death_despawn_timer;
+	Timer m_ping_timer;          // keep-alive: prevents client culling idle entities
+	Timer m_mana_report_timer;   // mana % report via group say while sitting (15s interval)
 
 	// Equipment: array of item IDs indexed by EQ::invslot::EQUIPMENT slots
 	uint32 m_equipment[EQ::invslot::EQUIPMENT_COUNT];
@@ -325,10 +369,14 @@ private:
 	uint32   m_owner_char_id;         // character_data.id of owning player
 	uint32   m_recruited_npc_type_id; // npc_types.id of the original recruited NPC
 
+	// Combat role (assigned at spawn, used by UpdateCombatPositioning)
+	CompanionCombatRole m_combat_role;
+
 	// Companion behavior
 	uint8    m_companion_type;        // COMPANION_TYPE_COMPANION or COMPANION_TYPE_MERCENARY
 	uint8    m_current_stance;        // COMPANION_STANCE_PASSIVE/BALANCED/AGGRESSIVE
 	bool     m_suspended;             // true when saved to DB but not spawned
+	bool     m_is_dismissed;         // true when voluntarily dismissed; enables re-recruitment lookup
 	bool     m_depop;                 // true when this entity should be cleaned up
 	bool     m_is_zoning;             // re-entrancy guard: true during Zone() to prevent double-depop (BUG-008)
 

@@ -409,11 +409,35 @@ void Group::AddMember(const std::string& new_member_name)
 }
 
 
+// Checks that members[index] points to a live entity in entity_list.
+// If the pointer is stale (freed memory / use-after-free), the slot is nulled
+// and the function returns false. Callers should replace bare null-checks in
+// group iteration loops with this call to prevent QueueClients-style crashes.
+bool Group::ValidateMember(uint32 index)
+{
+	if (index >= MAX_GROUP_MEMBERS)
+		return false;
+	if (!members[index])
+		return false;
+	// GetID() == 0 means the entity was never fully registered or already
+	// cleaned up; treat it as stale.
+	uint16 mob_id = members[index]->GetID();
+	if (mob_id == 0 || entity_list.GetMob(mob_id) != members[index]) {
+		LogInfo(
+			"Group::ValidateMember: slot [{}] had stale pointer (id [{}]), nulling to prevent use-after-free",
+			index, mob_id
+		);
+		members[index] = nullptr;
+		return false;
+	}
+	return true;
+}
+
 void Group::QueuePacket(const EQApplicationPacket *app, bool ack_req)
 {
 	uint32 i;
 	for(i = 0; i < MAX_GROUP_MEMBERS; i++)
-		if(members[i] && members[i]->IsClient())
+		if(ValidateMember(i) && members[i]->IsClient())
 			members[i]->CastToClient()->QueuePacket(app, ack_req);
 }
 
@@ -426,7 +450,7 @@ void Group::SendHPManaEndPacketsTo(Mob *member)
 		EQApplicationPacket outapp(OP_MobManaUpdate, sizeof(MobManaUpdate_Struct));
 
 		for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
-			if(members[i] && members[i] != member) {
+			if(ValidateMember(i) && members[i] != member) {
 				members[i]->CreateHPPacket(&hpapp);
 				member->CastToClient()->QueuePacket(&hpapp, false);
 				safe_delete_array(hpapp.pBuffer);
@@ -461,7 +485,7 @@ void Group::SendHPPacketsFrom(Mob *member)
 
 	uint32 i;
 	for(i = 0; i < MAX_GROUP_MEMBERS; i++) {
-		if(members[i] && members[i] != member && members[i]->IsClient()) {
+		if(ValidateMember(i) && members[i] != member && members[i]->IsClient()) {
 			members[i]->CastToClient()->QueuePacket(&hp_app);
 			if (members[i]->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
 				outapp.SetOpcode(OP_MobManaUpdate);
@@ -487,7 +511,7 @@ void Group::SendManaPacketFrom(Mob *member)
 
 	uint32 i;
 	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
-		if (members[i] && members[i] != member && members[i]->IsClient()) {
+		if (ValidateMember(i) && members[i] != member && members[i]->IsClient()) {
 			if (members[i]->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
 				outapp.SetOpcode(OP_MobManaUpdate);
 				MobManaUpdate_Struct *mana_update = (MobManaUpdate_Struct *)outapp.pBuffer;
@@ -508,7 +532,7 @@ void Group::SendEndurancePacketFrom(Mob* member)
 
 	uint32 i;
 	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
-		if (members[i] && members[i] != member && members[i]->IsClient()) {
+		if (ValidateMember(i) && members[i] != member && members[i]->IsClient()) {
 			if (members[i]->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
 				MobEnduranceUpdate_Struct *endurance_update = (MobEnduranceUpdate_Struct *)outapp.pBuffer;
 				endurance_update->spawn_id = member->GetID();
@@ -850,6 +874,8 @@ void Group::CastGroupSpell(Mob* caster, uint16 spell_id) {
 
 	for(z=0; z < MAX_GROUP_MEMBERS; z++)
 	{
+		if(!ValidateMember(z))
+			continue;
 		if(members[z] == caster) {
 			caster->SpellOnTarget(spell_id, caster);
 #ifdef GROUP_BUFF_PETS
@@ -857,7 +883,7 @@ void Group::CastGroupSpell(Mob* caster, uint16 spell_id) {
 				caster->SpellOnTarget(spell_id, caster->GetPet());
 #endif
 		}
-		else if(members[z] != nullptr)
+		else
 		{
 			distance = DistanceSquared(caster->GetPosition(), members[z]->GetPosition());
 			if(distance <= range2 && distance >= min_range2) {
@@ -905,7 +931,7 @@ bool Group::IsGroupMember(const char *name)
 void Group::GroupMessage(Mob* sender, uint8 language, uint8 lang_skill, const char* message) {
 	uint32 i;
 	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
-		if(!members[i])
+		if(!ValidateMember(i))
 			continue;
 
 		if (members[i]->IsClient() && members[i]->CastToClient()->GetFilter(FilterGroupChat)!=0)
@@ -1111,14 +1137,14 @@ void Group::SendUpdate(uint32 type, Mob* member)
 	gu->leader_aas = LeaderAbilities;
 
 	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; ++i)
-		if((members[i] != nullptr) && IsLeader(members[i]))
+		if(ValidateMember(i) && IsLeader(members[i]))
 		{
 			strcpy(gu->leadersname, members[i]->GetName());
 			break;
 		}
 
 	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; ++i)
-		if (members[i] != nullptr && members[i] != member)
+		if (ValidateMember(i) && members[i] != member)
 			strcpy(gu->membername[x++], members[i]->GetCleanName());
 
 	member->CastToClient()->QueuePacket(outapp);
@@ -1289,7 +1315,7 @@ void Group::VerifyGroup() {
 void Group::GroupMessageString(Mob* sender, uint32 type, uint32 string_id, const char* message,const char* message2,const char* message3,const char* message4,const char* message5,const char* message6,const char* message7,const char* message8,const char* message9, uint32 distance) {
 	uint32 i;
 	for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
-		if(members[i] == nullptr)
+		if(!ValidateMember(i))
 			continue;
 
 		if(members[i] == sender)
@@ -2388,7 +2414,7 @@ void Group::QueueHPPacketsForNPCHealthAA(Mob* sender, const EQApplicationPacket*
 	}
 
 	for(unsigned int i = 0; i < MAX_GROUP_MEMBERS; ++i)
-		if(members[i] && members[i]->IsClient())
+		if(ValidateMember(i) && members[i]->IsClient())
 		{
 			if(!members[i]->GetTarget() || (members[i]->GetTarget()->GetID() != SenderID))
 			{
@@ -2419,7 +2445,7 @@ void Group::ChangeLeader(Mob* newleader)
 	UpdateGroupAAs();
 	gu->leader_aas = LeaderAbilities;
 	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
-		if (members[i] && members[i]->IsClient())
+		if (ValidateMember(i) && members[i]->IsClient())
 		{
 			if (members[i]->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD)
 				members[i]->CastToClient()->SendGroupLeaderChangePacket(newleader->GetName());
@@ -2594,7 +2620,7 @@ void Group::QueueClients(Mob *sender, const EQApplicationPacket *app, bool ack_r
 	if (sender && sender->IsClient()) {
 		for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
 
-			if (!members[i])
+			if (!ValidateMember(i))
 				continue;
 
 			if (!members[i]->IsClient())

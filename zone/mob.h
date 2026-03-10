@@ -722,6 +722,9 @@ public:
 	//Movement
 	inline bool IsMoving() const { return moving; }
 	virtual void SetMoving(bool move) { moving = move; m_Delta = glm::vec4(); }
+	// Companion combat positioning — set by Companion::UpdateCombatPositioning()
+	bool IsHoldingCombatPosition() const { return m_hold_combat_position; }
+	void SetHoldCombatPosition(bool v) { m_hold_combat_position = v; }
 	virtual void GoToBind(uint8 bindnum = 0) { }
 	virtual void Gate(uint8 bindnum = 0);
 	virtual int GetWalkspeed() const { return(_GetWalkSpeed()); }
@@ -910,6 +913,11 @@ public:
 	uint32 GetFollowID() const { return follow_id; }
 	uint32 GetFollowDistance() const { return follow_dist; }
 	bool GetFollowCanRun() const { return follow_run; }
+	// Formation follow offsets (used by companion system, EQ heading units 0-512)
+	void SetFollowAngleOffset(float offset) { follow_angle_offset = offset; }
+	float GetFollowAngleOffset() const { return follow_angle_offset; }
+	void SetFollowFormationDistance(float dist) { follow_formation_dist = dist; }
+	float GetFollowFormationDistance() const { return follow_formation_dist; }
 	inline bool IsRareSpawn() const { return rare_spawn; }
 	inline void SetRareSpawn(bool in) { rare_spawn = in; }
 
@@ -1543,6 +1551,10 @@ protected:
 	int16 Vulnerability_Mod[HIGHEST_RESIST+2];
 	bool m_AllowBeneficial;
 	bool m_DisableMelee;
+	// Set by Companion::UpdateCombatPositioning() each tick when the companion is
+	// at its desired combat position (spell range for casters, behind mob for rogues).
+	// Checked in Mob::AI_Process() to suppress the default pursue-to-melee movement.
+	bool m_hold_combat_position = false;
 
 	bool isgrouped;
 	bool israidgrouped;
@@ -1599,6 +1611,8 @@ protected:
 	uint32 follow_id;
 	uint32 follow_dist;
 	bool follow_run;
+	float follow_angle_offset  = 0.0f;  // heading offset from "directly behind" owner (EQ heading units, 0-512)
+	float follow_formation_dist = 15.0f; // distance from owner for formation positioning
 	bool no_target_hotkey;
 	bool rare_spawn;
 	int32 heroic_strikethrough;

@@ -34,6 +34,8 @@
 #include "zone/string_ids.h"
 #include "zone/zone.h"
 
+#include <algorithm>
+#include <cmath>
 #include <fmt/format.h>
 
 extern volatile bool is_zone_loaded;
@@ -48,7 +50,9 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	  m_evade_timer(500),
 	  m_retention_check_timer(RuleI(Companions, MercRetentionCheckS) * 1000),
 	  m_death_despawn_timer(RuleI(Companions, DeathDespawnS) * 1000),
-	  m_replacement_spawn_timer(RuleI(Companions, ReplacementSpawnDelayS) * 1000)
+	  m_replacement_spawn_timer(RuleI(Companions, ReplacementSpawnDelayS) * 1000),
+	  m_ping_timer(5000),
+	  m_mana_report_timer(15000)
 {
 	// Identity
 	m_companion_id          = 0;
@@ -57,6 +61,7 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	m_companion_type        = companion_type;
 	m_current_stance        = COMPANION_STANCE_BALANCED;
 	m_suspended             = false;
+	m_is_dismissed          = false;
 	m_depop                 = false;
 	m_is_zoning             = false;
 	m_recruited_level       = d->level;
@@ -107,6 +112,21 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	// Disable death despawn timer until death occurs
 	m_death_despawn_timer.Disable();
 	m_replacement_spawn_timer.Disable();
+	// Ping timer starts disabled; enabled in Process() when companion is stationary
+	m_ping_timer.Disable();
+	// Mana report timer starts disabled; enabled when companion sits to med
+	m_mana_report_timer.Disable();
+
+	// Set flee immunity immediately in the constructor so there is no window
+	// between construction and Spawn() where flee can trigger.  Spawn() and
+	// Process() re-apply this based on the live rule value, but the constructor
+	// guard ensures the companion is never fleable even if Spawn() is delayed.
+	if (!RuleB(Companions, CompanionFleeEnabled)) {
+		SetSpecialAbility(SpecialAbility::FleeingImmunity, 1);
+	}
+
+	// Determine combat role from class for positioning logic
+	m_combat_role = DetermineRoleFromClass(GetClass());
 
 	// Initialize AI based on class
 	if (GetClass() == Class::Rogue) {
@@ -151,13 +171,16 @@ Companion* Companion::CreateFromNPC(Client* owner, NPC* source_npc)
 
 	auto pos = source_npc->GetPosition();
 
-	// Check for an existing dismissed companion record (re-recruitment path).
-	// If the player previously dismissed this NPC voluntarily, restore its full
-	// state (level, XP, equipment, buffs) rather than starting fresh.
+	// Check for an existing dismissed or suspended companion record (re-recruitment path).
+	// Matches both voluntary dismissal (is_dismissed=1) and death-then-re-recruitment
+	// (is_suspended=1 with cur_hp=0) so equipment is always preserved across dismissal
+	// and death. Without matching is_suspended, a dead companion re-recruited before
+	// the despawn timer fires would fall through to the fresh-recruitment path and lose
+	// all equipment. (BUG-012)
 	auto existing = CompanionDataRepository::GetWhere(
 		database,
 		fmt::format(
-			"owner_id = {} AND npc_type_id = {} AND is_dismissed = 1 LIMIT 1",
+			"owner_id = {} AND npc_type_id = {} AND (is_dismissed = 1 OR is_suspended = 1) LIMIT 1",
 			owner->CharacterID(),
 			source_npc->GetNPCTypeID()
 		)
@@ -182,10 +205,11 @@ Companion* Companion::CreateFromNPC(Client* owner, NPC* source_npc)
 			return nullptr;
 		}
 
-		// Clear dismissed flag and activate — companion is active again.
-		// is_dismissed has no C++ member; update directly to avoid Save() overwriting
-		// other fields with stale data before the companion is fully initialized.
-		companion->m_suspended = false;
+		// Clear dismissed/suspended flags and activate — companion is active again.
+		// Reset both C++ members and the DB record so Save() writes the correct state
+		// on the next save without re-introducing stale is_dismissed/is_suspended values.
+		companion->m_suspended    = false;
+		companion->m_is_dismissed = false;
 		database.QueryDatabase(
 			fmt::format(
 				"UPDATE `companion_data` SET `is_dismissed` = 0, `is_suspended` = 0 WHERE `id` = {}",
@@ -329,6 +353,14 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 	// Let the base NPC death handling run first (creates corpse, etc.)
 	bool result = NPC::Death(killer_mob, damage, spell_id, attack_skill, killed_by, is_buff_tic);
 
+	// NPC::Death() unconditionally sets p_depop = true, which causes NPC::Process()
+	// to return false on the very next tick and immediately remove the entity.
+	// For companions we want the entity to persist in the world (as a dead entity)
+	// until m_death_despawn_timer fires in Companion::Process(), giving the player
+	// a window to resurrect them.  Reset p_depop here so NPC::Process() keeps
+	// returning true until the death despawn timer triggers cleanup.
+	SetDepop(false);
+
 	// Equipment persistence on death: if the rule is false, clear all equipment and
 	// return it to the owner. Default is true (equipment survives death).
 	if (!RuleB(Companions, EquipmentPersistsThroughDeath)) {
@@ -358,14 +390,30 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 			GetCleanName(),
 			RuleI(Companions, DeathDespawnS));
 
-		// Mark companion as suspended (dead) in DB
+		// Mark companion as suspended (dead) in DB. Explicitly save equipment before
+		// the entity is cleaned up so the companion_inventories rows always reflect the
+		// current gear at the moment of death. (BUG-012)
 		SetSuspended(true);
 		m_times_died++;
 		UpdateTimeActive(); // stop accruing active time at death
+		SaveEquipment();
 		Save();
 
 		// Start the despawn timer — if not resurrected, auto-dismiss
 		m_death_despawn_timer.Start();
+	}
+
+	// Remove from group's members[] array BEFORE the entity cleanup pass deletes us.
+	// Without this, the group holds a dangling pointer that crashes on the next
+	// QueueClients() call. Matches how Bot::Death() calls Zone()->MemberZoned().
+	// MemberZoned() NULLs our slot without sending group-leave packets, which is
+	// correct for a dead entity (dead companions stay conceptually in the group
+	// for resurrection purposes, but the live pointer must be cleared).
+	if (HasGroup()) {
+		Group* g = GetGroup();
+		if (g) {
+			g->MemberZoned(this);
+		}
 	}
 
 	return result;
@@ -436,6 +484,45 @@ int64 Companion::CalcHPRegen() const
 }
 
 // ============================================================
+// Mana Regen
+// ============================================================
+
+int64 Companion::CalcManaRegen()
+{
+	// Non-mana users: warriors, rogues, berserkers have no max mana.
+	if (GetMaxMana() <= 0) {
+		return 0;
+	}
+
+	uint8 level    = GetLevel();
+	uint8 cls      = GetClass();
+	int32 regen    = 2; // flat standing base
+
+	// Bards regenerate slowly whether sitting or standing
+	if (cls == Class::Bard) {
+		regen = IsSitting() ? 2 : 1;
+		regen += itembonuses.ManaRegen + aabonuses.ManaRegen;
+		return static_cast<int64>(regen);
+	}
+
+	// Sitting non-melee casters use the meditate formula
+	if (IsSitting()) {
+		if (GetArchetype() != Archetype::Melee) {
+			uint16 meditate = GetSkill(EQ::skills::SkillMeditate);
+			regen = (((meditate / 10) + (level - (level / 4))) / 4) + 4;
+		}
+	}
+
+	regen += spellbonuses.ManaRegen + itembonuses.ManaRegen + aabonuses.ManaRegen;
+
+	// Apply global character regen multiplier then companion-specific multiplier
+	regen = (regen * RuleI(Character, ManaRegenMultiplier)) / 100;
+	regen = (regen * RuleI(Companions, CompanionManaRegenMult)) / 100;
+
+	return static_cast<int64>(regen);
+}
+
+// ============================================================
 // AI Overrides
 // ============================================================
 
@@ -448,8 +535,22 @@ void Companion::AI_Start(uint32 iMoveDelay)
 {
 	NPC::AI_Start(iMoveDelay);
 
-	// Load companion-specific spell list
+	// Load companion-specific spell list from companion_spell_sets.
+	// NPC::AI_Start() above disabled AIautocastspell_timer when AIspells is empty
+	// (which is true for most recruited NPCs that have no npc_spells_id).
+	// After loading companion spells we re-enable the timer so the cast-check
+	// overrides (AI_EngagedCastCheck, AI_PursueCastCheck, AI_IdleCastCheck) fire
+	// on schedule.  Without this the timer stays disabled and companions stand
+	// idle on initial spawn — they only cast after a level-up which calls
+	// LoadCompanionSpells() directly and re-arms the timer via a separate path.
 	LoadCompanionSpells();
+
+	// Re-arm cast timer if companion spells were loaded.  The timer controls
+	// how frequently Mob::AI_Process() calls the cast-check path; without it
+	// the companion never casts on initial spawn.
+	if (!m_companion_spells.empty() && AIautocastspell_timer) {
+		AIautocastspell_timer->Start(RandomTimer(0, 500), false);
+	}
 
 	// Seed hp_regen so that companions whose npc_types row has hp_regen_rate=0
 	// still regenerate HP.  CalcHPRegen() returns the greater of the NPC's
@@ -467,20 +568,236 @@ void Companion::AI_Stop()
 	NPC::AI_Stop();
 }
 
+// ============================================================
+// Combat Role Classification
+// ============================================================
+
+CompanionCombatRole Companion::DetermineRoleFromClass(uint8 class_id)
+{
+	switch (class_id) {
+		// Tanks: charge to melee, hold from front
+		case Class::Warrior:
+		case Class::Paladin:
+		case Class::ShadowKnight:
+			return COMBAT_ROLE_MELEE_TANK;
+
+		// Rogue: position behind mob for backstab
+		case Class::Rogue:
+			return COMBAT_ROLE_ROGUE;
+
+		// Melee DPS: charge to melee normally
+		case Class::Monk:
+		case Class::Berserker:
+		case Class::Beastlord:
+		case Class::Ranger:
+		case Class::Bard:
+			return COMBAT_ROLE_MELEE_DPS;
+
+		// Caster DPS: stay at spell range
+		case Class::Wizard:
+		case Class::Magician:
+		case Class::Necromancer:
+		case Class::Enchanter:
+			return COMBAT_ROLE_CASTER_DPS;
+
+		// Healers: stay at spell range
+		case Class::Cleric:
+		case Class::Druid:
+		case Class::Shaman:
+			return COMBAT_ROLE_HEALER;
+
+		default:
+			return COMBAT_ROLE_MELEE_DPS;
+	}
+}
+
+CompanionCombatRole Companion::GetCombatRole() const
+{
+	return m_combat_role;
+}
+
+// ============================================================
+// Combat Positioning
+// ============================================================
+
+void Companion::UpdateCombatPositioning()
+{
+	// Reset flag every tick — will be re-set below if we want to hold
+	m_hold_combat_position = false;
+
+	if (!IsEngaged() || !GetTarget()) {
+		return;
+	}
+
+	Mob* target = GetTarget();
+
+	// Safety guard: never run combat positioning against the owner or any group
+	// member.  This can happen when the hate list has a stale entry pointing at
+	// the owner (e.g., because a previous tick set the target before the hate
+	// list was pruned) or when NPC::AI_Process() re-sets the target from the
+	// hate list to someone that should not be attacked.  If we detect the
+	// target is the owner or a group member, scrub it from the hate list,
+	// clear the target, and bail out so the companion returns to normal
+	// formation-follow behaviour.
+	Client* positioning_owner = GetCompanionOwner();
+	if (positioning_owner) {
+		if (target == positioning_owner) {
+			RemoveFromHateList(target);
+			SetTarget(nullptr);
+			return;
+		}
+		Group* pos_grp = GetGroup();
+		if (pos_grp && pos_grp->IsGroupMember(target)) {
+			RemoveFromHateList(target);
+			SetTarget(nullptr);
+			return;
+		}
+	}
+
+	// Additional guard: if we have a follow target (formation-follow) but the
+	// target is NOT a genuine hostile NPC, skip combat positioning entirely.
+	// This prevents the rogue (and casters) from running class-specific combat
+	// movement against non-enemy entities during normal follow.
+	if (GetFollowID() && (!target->IsNPC() || target->IsCompanion())) {
+		return;
+	}
+
+	switch (m_combat_role) {
+		case COMBAT_ROLE_MELEE_TANK:
+		case COMBAT_ROLE_MELEE_DPS:
+			// Default melee behavior — AI_Process handles pursuit and attacks normally
+			break;
+
+		case COMBAT_ROLE_ROGUE: {
+			if (!RuleB(Companions, RogueBehindMob)) {
+				break;
+			}
+			// If not already behind the mob, plot a position behind it and RunTo
+			if (!BehindMob(target, GetX(), GetY())) {
+				float dest_x = 0.0f, dest_y = 0.0f, dest_z = 0.0f;
+				if (PlotPositionAroundTarget(target, dest_x, dest_y, dest_z, true)) {
+					float dist_sq = DistanceSquaredNoZ(m_Position, glm::vec4(dest_x, dest_y, dest_z, 0.0f));
+					if (dist_sq > 25.0f) { // >5 units — not already at destination
+						RunTo(dest_x, dest_y, dest_z);
+					}
+					// Hold position so the default pursue doesn't override our movement
+					m_hold_combat_position = true;
+				}
+			}
+			// If already behind, let normal melee AI handle attacks (don't set hold)
+			break;
+		}
+
+		case COMBAT_ROLE_CASTER_DPS:
+		case COMBAT_ROLE_HEALER: {
+			int desired_range = RuleI(Companions, CasterCombatRange);
+			if (desired_range <= 0) {
+				// Rule disabled — fall back to default melee pursue
+				break;
+			}
+
+			if (GetManaRatio() <= 10.0f) {
+				// OOM — hold position rather than charging into melee.
+				// A caster with no mana standing at range is far better than a caster
+				// with no mana getting hit in melee.  They can still auto-attack from
+				// their current position and will resume casting when mana regenerates.
+				if (IsMoving()) {
+					StopNavigation();
+				}
+				if (GetTarget()) {
+					FaceTarget(GetTarget());
+				}
+				m_hold_combat_position = true;
+				break;
+			}
+
+			float dist_sq = DistanceSquaredNoZ(m_Position, target->GetPosition());
+			float range_f  = static_cast<float>(desired_range);
+			float range_sq = range_f * range_f;
+
+			if (dist_sq <= range_sq && dist_sq >= (range_f * 0.5f) * (range_f * 0.5f)) {
+				// Within the sweet spot (50%–100% of desired range) — hold position
+				if (IsMoving()) {
+					StopNavigation();
+				}
+				FaceTarget();
+				m_hold_combat_position = true;
+			} else if (dist_sq > range_sq) {
+				// Too far from target — close to 70% of desired range
+				float desired_dist = range_f * 0.7f;
+				float dx = target->GetX() - GetX();
+				float dy = target->GetY() - GetY();
+				float len = std::sqrt(dx * dx + dy * dy);
+				if (len > 0.0f) {
+					float nx = dx / len;
+					float ny = dy / len;
+					float goal_x = GetX() + nx * (std::sqrt(dist_sq) - desired_dist);
+					float goal_y = GetY() + ny * (std::sqrt(dist_sq) - desired_dist);
+					RunTo(goal_x, goal_y, target->GetZ());
+				}
+				m_hold_combat_position = true;
+			} else {
+				// Too close (< 50% of desired range) — actively retreat to 70% of desired range
+				float desired_dist = range_f * 0.7f;
+				float dx = GetX() - target->GetX();  // direction AWAY from target
+				float dy = GetY() - target->GetY();
+				float len = std::sqrt(dx * dx + dy * dy);
+				if (len > 1.0f) {
+					// Move from the target's position outward along the away vector
+					float nx     = dx / len;
+					float ny     = dy / len;
+					float goal_x = target->GetX() + nx * desired_dist;
+					float goal_y = target->GetY() + ny * desired_dist;
+					RunTo(goal_x, goal_y, GetZ());
+				} else {
+					// Overlapping with target — retreat toward the owner as a tiebreaker
+					Client* retreat_owner = GetCompanionOwner();
+					if (retreat_owner) {
+						float ox   = retreat_owner->GetX() - target->GetX();
+						float oy   = retreat_owner->GetY() - target->GetY();
+						float olen = std::sqrt(ox * ox + oy * oy);
+						if (olen > 0.0f) {
+							float goal_x = target->GetX() + (ox / olen) * desired_dist;
+							float goal_y = target->GetY() + (oy / olen) * desired_dist;
+							RunTo(goal_x, goal_y, GetZ());
+						}
+					}
+				}
+				m_hold_combat_position = true;
+			}
+			break;
+		}
+	}
+}
+
 bool Companion::Process()
 {
 	// Check death despawn timer
 	if (m_death_despawn_timer.Enabled() && m_death_despawn_timer.Check()) {
-		LogInfo("Companion [{}] death despawn timer fired — auto-dismissing", GetName());
-		// Permanent death — soul wipe for unresurrected companions
+		LogInfo("Companion [{}] death despawn timer fired — marking dismissed", GetName());
+		// Death timer expired without resurrection. Mark the companion as dismissed so
+		// the player can re-recruit and restore their companion's equipment/XP/state.
+		// SoulWipe() (permanent deletion) is reserved for explicit permanent dismissal
+		// via !dismiss permanent — not automatic death expiry. (BUG-012)
 		Client* owner = GetCompanionOwner();
 		if (owner) {
 			owner->Message(Chat::Yellow,
-				"%s has been lost forever. They waited too long to be resurrected.",
+				"%s has returned home. You can recruit them again when you find them.",
 				GetCleanName());
 		}
-		// Trigger soul wipe on permanent death
-		SoulWipe();
+		// Safety net: ensure group slot is NULLed before we return false
+		// (entity cleanup will safe_delete us; the group must not hold our pointer).
+		if (HasGroup()) {
+			Group* g = GetGroup();
+			if (g) {
+				g->MemberZoned(this);
+			}
+		}
+
+		// Mark as dismissed so re-recruitment can find and restore this companion.
+		SetDismissed(true);
+		SetSuspended(true);
+		Save();
 		return false;
 	}
 
@@ -496,9 +813,16 @@ bool Companion::Process()
 		m_replacement_spawn_timer.Disable();
 	}
 
-	// Suppress flee behavior when CompanionFleeEnabled rule is off
+	// Enforce flee immunity in sync with the rule every process tick.
+	// FleeingImmunity is checked at the top of CheckFlee() (fearpath.cpp),
+	// which fires inside NPC::Process() below.  Keeping the ability set
+	// here (rather than only in Spawn) ensures runtime rule changes apply
+	// immediately and that the ability survives any buff/debuff cycle that
+	// might clear special abilities.
 	if (!RuleB(Companions, CompanionFleeEnabled)) {
-		currently_fleeing = false;
+		SetSpecialAbility(SpecialAbility::FleeingImmunity, 1);
+	} else {
+		SetSpecialAbility(SpecialAbility::FleeingImmunity, 0);
 	}
 
 	Client* owner = GetCompanionOwner();
@@ -512,6 +836,22 @@ bool Companion::Process()
 			if (IsCasting() && IsDetrimentalSpell(casting_spell_id)) {
 				InterruptSpell();
 			}
+		}
+		// Sit/stand with owner even in passive stance
+		if (!IsEngaged() && !IsMoving() && owner && owner->IsClient()) {
+			bool owner_sitting = (owner->GetAppearance() == eaSitting);
+			if (owner_sitting && !IsSitting()) {
+				Sit();
+			} else if (!owner_sitting && IsSitting()) {
+				Stand();
+			}
+		}
+		// Mana report for passive casters/healers sitting
+		if (IsSitting() &&
+		    (m_combat_role == COMBAT_ROLE_CASTER_DPS || m_combat_role == COMBAT_ROLE_HEALER) &&
+		    GetMaxMana() > 0 &&
+		    m_mana_report_timer.Check()) {
+			CompanionGroupSay(this, "Mana: %d%%", static_cast<int>(GetManaRatio()));
 		}
 		// Skip all assist logic — fall through to NPC::Process() for regen and movement
 		return NPC::Process();
@@ -629,11 +969,69 @@ bool Companion::Process()
 		}
 	}
 
-	return NPC::Process();
+	// Keep-alive position packet: the Titanium client culls (stops rendering) entities
+	// that have not sent a position update for ~5 seconds.  When a companion is
+	// stationary (holding position or following without moving), send a zero-delta
+	// position packet on a 5-second timer so the client keeps the entity visible.
+	// This mirrors the same pattern used by Bot::Process() (bot.cpp ~line 1737-1748).
+	if (IsMoving()) {
+		m_ping_timer.Disable();
+	} else {
+		if (!m_ping_timer.Enabled()) {
+			m_ping_timer.Start(5000);
+		}
+		if (m_ping_timer.Check()) {
+			SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0);
+		}
+	}
+
+	// Sit when owner sits (med/rest synchronization).
+	// Only when out of combat and the companion is not moving.
+	// Casters/healers sit to regen mana; all companions sit to show idle state.
+	if (!IsEngaged() && !IsMoving()) {
+		if (owner && owner->IsClient()) {
+			bool owner_sitting = (owner->GetAppearance() == eaSitting);
+			bool companion_sitting = IsSitting();
+			if (owner_sitting && !companion_sitting) {
+				Sit();
+			} else if (!owner_sitting && companion_sitting) {
+				Stand();
+			}
+		}
+	} else if (IsEngaged() && IsSitting()) {
+		// Stand when entering combat
+		Stand();
+	}
+
+	// Mana report via group say while sitting (casters/healers only).
+	if (IsSitting() && !IsEngaged() &&
+	    (m_combat_role == COMBAT_ROLE_CASTER_DPS || m_combat_role == COMBAT_ROLE_HEALER) &&
+	    GetMaxMana() > 0 &&
+	    m_mana_report_timer.Check()) {
+		int mana_pct = static_cast<int>(GetManaRatio());
+		CompanionGroupSay(this, "Mana: %d%%", mana_pct);
+	}
+
+	// Update class-based combat positioning before NPC::Process() runs AI_Process().
+	// For casters/healers this sets m_hold_combat_position to prevent default melee
+	// pursuit. For rogues this routes them behind the target. Must run after target
+	// selection so GetTarget() is current.
+	UpdateCombatPositioning();
+
+	bool npc_result = NPC::Process();
+	if (!npc_result) {
+		LogInfo("Companion [{}] (id {}) NPC::Process() returned false — npc_depop=[{}] companion_depop=[{}] IsEngaged=[{}] HP=[{}]",
+		        GetName(), GetID(), (int)NPC::GetDepop(), (int)m_depop, (int)IsEngaged(), GetHP());
+	}
+	return npc_result;
 }
 
 bool Companion::AI_EngagedCastCheck()
 {
+	LogAIDetail("Companion [{}] AI_EngagedCastCheck: spells=[{}] target=[{}] engaged=[{}] mana=[{:.0f}%%]",
+	            GetName(), m_companion_spells.size(),
+	            GetTarget() ? GetTarget()->GetName() : "none",
+	            IsEngaged(), GetManaRatio());
 	// Delegate to the companion spell AI in companion_ai.cpp
 	return AICastSpell(GetChanceToCastBySpellType(0), 0xFFFFFFFF);
 }
@@ -644,13 +1042,66 @@ bool Companion::AI_IdleCastCheck()
 	return AICastSpell(GetChanceToCastBySpellType(0), SpellType_Buff | SpellType_Heal | SpellType_Pet);
 }
 
+bool Companion::AI_PursueCastCheck()
+{
+	LogAIDetail("Companion [{}] AI_PursueCastCheck: hold=[{}] role=[{}] spells=[{}] target=[{}] engaged=[{}] mana=[{:.0f}%%]",
+	            GetName(), m_hold_combat_position, static_cast<int>(m_combat_role),
+	            m_companion_spells.size(),
+	            GetTarget() ? GetTarget()->GetName() : "none",
+	            IsEngaged(), GetManaRatio());
+	// For casters and healers that hold position at range (m_hold_combat_position
+	// is set by UpdateCombatPositioning()), we cast spells from this distance
+	// rather than pursuing to melee.  Call our own AICastSpell() so the companion
+	// uses the companion_spell_sets data, not the NPC spell list.
+	//
+	// For melee roles (TANK, MELEE_DPS, ROGUE) we return false so AI_Process()
+	// falls through to the normal pursue-to-melee branch.
+	if (m_hold_combat_position) {
+		switch (m_combat_role) {
+			case COMBAT_ROLE_CASTER_DPS:
+			case COMBAT_ROLE_HEALER:
+				LogAIDetail("Companion [{}] AI_PursueCastCheck: holding position, attempting AICastSpell", GetName());
+				return AICastSpell(GetChanceToCastBySpellType(0), 0xFFFFFFFF);
+			default:
+				LogAIDetail("Companion [{}] AI_PursueCastCheck: melee role [{}], not casting from pursue", GetName(), static_cast<int>(m_combat_role));
+				break;
+		}
+	}
+	return false;
+}
+
 // Companion::AICastSpell is implemented in companion_ai.cpp
 
 bool Companion::AIDoSpellCast(uint16 spellid, Mob* tar, int32 mana_cost,
                               uint32* oDontDoAgainBefore)
 {
-	return CastSpell(spellid, tar ? tar->GetID() : 0, EQ::spells::CastingSlot::Gem2,
-	                 -1, mana_cost, oDontDoAgainBefore);
+	LogAIDetail("Companion [{}] AIDoSpellCast: spell=[{}] ({}) target=[{}] mana_cost=[{}] currently_casting=[{}] mana=[{:.0f}%%]",
+	            GetName(), spellid,
+	            IsValidSpell(spellid) ? spells[spellid].name : "INVALID",
+	            tar ? tar->GetName() : "none",
+	            mana_cost,
+	            casting_spell_id,
+	            GetManaRatio());
+
+	// Group-say combat logging: announce spell cast to the group so the player
+	// can see what the companion is doing.
+	if (IsValidSpell(spellid) && tar) {
+		const char* spell_name = spells[spellid].name;
+		int mana_pct = GetMaxMana() > 0 ? static_cast<int>(GetManaRatio()) : 100;
+		if (tar == this) {
+			CompanionGroupSay(this, "Casting %s on myself [Mana: %d%%]",
+			                  spell_name, mana_pct);
+		} else {
+			CompanionGroupSay(this, "Casting %s on %s [Mana: %d%%]",
+			                  spell_name, tar->GetCleanName(), mana_pct);
+		}
+	}
+
+	bool result = CastSpell(spellid, tar ? tar->GetID() : 0, EQ::spells::CastingSlot::Gem2,
+	                        -1, mana_cost, oDontDoAgainBefore);
+	LogAIDetail("Companion [{}] AIDoSpellCast: spell=[{}] CastSpell result=[{}]",
+	            GetName(), spellid, result);
+	return result;
 }
 
 // ============================================================
@@ -757,6 +1208,24 @@ bool Companion::Spawn(Client* owner)
 	// and casts spells.  LoadCompanionSpells() is called inside AI_Start().
 	AI_Start();
 
+	// Strip problematic special abilities inherited from the source NPC.
+	// ProcessSpecialAbilities() runs inside NPC::AI_Start() and re-applies
+	// whatever is in NPCTypedata->special_abilities.  We strip after AI_Start()
+	// so companions are never immune to melee/magic, and are never invulnerable,
+	// regardless of what the source NPC's special_abilities field contains.
+	SetSpecialAbility(SpecialAbility::MeleeImmunity, 0);
+	SetSpecialAbility(SpecialAbility::MagicImmunity, 0);
+	SetInvul(false);
+
+	// Apply flee immunity based on the rule. Using FleeingImmunity (ability 21)
+	// is more robust than clearing currently_fleeing in Process() because
+	// FleeingImmunity is checked at the top of CheckFlee() before any flee
+	// state can be set.  The rule value is re-evaluated in Process() as well
+	// so runtime changes to the rule take effect immediately.
+	if (!RuleB(Companions, CompanionFleeEnabled)) {
+		SetSpecialAbility(SpecialAbility::FleeingImmunity, 1);
+	}
+
 	// Join the owner's group (creates a new group if the owner is not already
 	// in one).  Sets follow ID so the companion trails the owner.
 	CompanionJoinClientGroup();
@@ -858,7 +1327,16 @@ void Companion::Depop(bool start_spawn_timer)
 		RemoveCompanionFromGroup(this, GetGroup());
 	}
 
+	// Capture owner id before removal from entity list so the reassignment
+	// call below only sees the companions that remain active.
+	uint32 owner_char_id = m_owner_char_id;
 	entity_list.RemoveCompanion(GetID());
+
+	// Reassign formation slots for remaining companions now that this one
+	// has left the entity list.
+	if (owner_char_id != 0) {
+		ReassignFormationSlots(owner_char_id);
+	}
 
 	if (HasPet()) {
 		GetPet()->Depop();
@@ -881,9 +1359,12 @@ void Companion::Dismiss(bool permanent)
 		// Permanent dismissal: delete DB record, wipe soul
 		SoulWipe();
 	} else {
-		// Voluntary dismissal: mark suspended and preserve state
+		// Voluntary dismissal: mark suspended and dismissed so re-recruitment can find
+		// this record. is_dismissed=1 is the sentinel CreateFromNPC() uses to locate
+		// a previously-dismissed companion and restore its equipment/XP/state. (BUG-012)
 		// The +10% re-recruitment bonus is tracked via companion_data.dismissed_at
 		SetSuspended(true);
+		SetDismissed(true);
 		Save();
 	}
 
@@ -980,6 +1461,7 @@ bool Companion::CompanionJoinClientGroup()
 		g->AddToGroup(owner);
 		g->AddToGroup(this);
 		SetFollowID(owner->GetID());
+		ReassignFormationSlots(m_owner_char_id);
 
 		LogInfo("Companion [{}] joined new group with [{}]", GetName(), owner->GetName());
 	} else {
@@ -999,6 +1481,7 @@ bool Companion::CompanionJoinClientGroup()
 			g->AddToGroup(this);
 
 			SetFollowID(owner->GetID());
+			ReassignFormationSlots(m_owner_char_id);
 			LogInfo("Companion [{}] joined existing group with [{}]", GetName(), owner->GetName());
 		} else {
 			Suspend();
@@ -1018,6 +1501,7 @@ bool Companion::AddCompanionToGroup(Companion* companion, Group* group)
 	if (companion->HasGroup()) {
 		if (companion->GetGroup() == group && companion->GetCompanionOwner()) {
 			companion->SetFollowID(companion->GetCompanionOwner()->GetID());
+			ReassignFormationSlots(companion->GetOwnerCharacterID());
 			return true;
 		}
 		RemoveCompanionFromGroup(companion, companion->GetGroup());
@@ -1035,6 +1519,7 @@ bool Companion::AddCompanionToGroup(Companion* companion, Group* group)
 		group->AddToGroup(companion);
 
 		companion->SetFollowID(companion->GetCompanionOwner()->GetID());
+		ReassignFormationSlots(companion->GetOwnerCharacterID());
 		return true;
 	}
 
@@ -1127,6 +1612,7 @@ bool Companion::Save()
 	cd.cur_hp          = GetHP();
 	cd.cur_mana        = GetMana();
 	cd.is_suspended    = m_suspended ? 1 : 0;
+	cd.is_dismissed    = m_is_dismissed ? 1 : 0;
 	cd.stance          = m_current_stance;
 	cd.spawn2_id       = m_spawn2_id;
 	cd.spawngroupid    = m_spawngroupid;
@@ -1173,6 +1659,7 @@ bool Companion::Load(uint32 companion_id)
 	m_companion_type        = cd.companion_type;
 	m_current_stance        = cd.stance;
 	m_suspended             = (cd.is_suspended == 1);
+	m_is_dismissed          = (cd.is_dismissed == 1);
 	m_spawn2_id             = cd.spawn2_id;
 	m_spawngroupid          = cd.spawngroupid;
 	m_companion_xp          = static_cast<uint32>(cd.experience);
@@ -1182,6 +1669,17 @@ bool Companion::Load(uint32 companion_id)
 	m_time_active           = cd.time_active;
 	m_times_died            = cd.times_died;
 	m_active_since          = static_cast<uint32>(time(nullptr));
+
+	// Apply saved level if the companion has leveled past its recruited level.
+	// The constructor sets stats from npc_type->level (the original NPC's base
+	// level). If the companion earned XP and leveled up, cd.level will be higher
+	// than m_recruited_level. ScaleStatsToLevel() uses m_recruited_level (just
+	// restored above) and m_base_* (set in the constructor from npc_type) as the
+	// reference point, so it must be called after m_recruited_level is restored
+	// but before equipment bonuses are applied.
+	if (cd.level > 0 && static_cast<uint8>(cd.level) != GetLevel()) {
+		ScaleStatsToLevel(static_cast<uint8>(cd.level));
+	}
 
 	// Restore HP/mana if not suspended at max
 	if (cd.cur_hp > 0) {
@@ -1945,12 +2443,14 @@ bool Companion::CheckSpellRecastTimers(uint16 spellid)
 
 void Companion::Sit()
 {
-	SetAppearance(eaStanding); // Will use correct appearance
+	SetAppearance(eaSitting);
+	m_mana_report_timer.Start(15000);
 }
 
 void Companion::Stand()
 {
 	SetAppearance(eaStanding);
+	m_mana_report_timer.Disable();
 }
 
 bool Companion::IsSitting() const
@@ -2039,6 +2539,75 @@ std::vector<Companion*> EntityList::GetCompanionsByOwnerCharacterID(uint32 chara
 		}
 	}
 	return result;
+}
+
+// ============================================================
+// Formation slot assignment
+//
+// Distributes all active companions for an owner in a 120-degree arc
+// centred directly in front of the owner, with equal angular spacing.
+// The narrow forward arc keeps companions visible and clickable when
+// the player stops, since they fan out in front rather than behind.
+//
+//   N=1 companions : offset = 0 (directly in front)
+//   N=2 companions : offsets at -arc/2, +arc/2  (left-front, right-front)
+//   N>=2 companions: step = arc / (N-1), offset[i] = -arc/2 + i*step
+//
+// Offsets are stored as EQ heading units (0-512 scale).
+// 120 degrees = 120/360 * 512 = 170.667 heading units.
+// ============================================================
+
+void Companion::AssignFormationSlot()
+{
+	Client* owner = GetCompanionOwner();
+	if (!owner) {
+		return;
+	}
+
+	auto companions = entity_list.GetCompanionsByOwnerCharacterID(m_owner_char_id);
+	int total = static_cast<int>(companions.size());
+	if (total == 0) {
+		return;
+	}
+
+	// Sort by companion_id for consistent, deterministic slot ordering.
+	std::sort(companions.begin(), companions.end(),
+		[](const Companion* a, const Companion* b) {
+			return a->GetCompanionID() < b->GetCompanionID();
+		});
+
+	// Find this companion's index in the sorted list.
+	int my_slot = 0;
+	for (int i = 0; i < total; i++) {
+		if (companions[i] == this) {
+			my_slot = i;
+			break;
+		}
+	}
+
+	// 120 degrees converted to EQ heading units: 120.0f / 360.0f * 512.0f
+	// This fans companions out in a forward arc so they are visible and
+	// clickable when the player stops.
+	const float arc_width = 170.667f;
+
+	float offset = 0.0f;
+	if (total >= 2) {
+		float step = arc_width / static_cast<float>(total - 1);
+		offset = -arc_width / 2.0f + static_cast<float>(my_slot) * step;
+	}
+
+	SetFollowAngleOffset(offset);
+	SetFollowFormationDistance(static_cast<float>(RuleI(Companions, FormationDistance)));
+}
+
+void Companion::ReassignFormationSlots(uint32 owner_char_id)
+{
+	auto companions = entity_list.GetCompanionsByOwnerCharacterID(owner_char_id);
+	for (auto* c : companions) {
+		if (c) {
+			c->AssignFormationSlot();
+		}
+	}
 }
 
 // ============================================================

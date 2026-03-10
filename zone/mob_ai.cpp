@@ -37,6 +37,7 @@
 
 #include "glm/gtx/projection.hpp"
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <limits>
 
@@ -1027,7 +1028,10 @@ void Mob::AI_Process() {
 	}
 
 	if (engaged) {
-		if (IsNPC() && m_z_clip_check_timer.Check()) {
+		// Companions manage their own positioning via UpdateCombatPositioning() and
+		// formation follow — exempting them from the z-clip teleport prevents them
+		// from being forcibly moved to the target's X/Y when holding at spell range.
+		if (IsNPC() && !IsCompanion() && m_z_clip_check_timer.Check()) {
 			bool is_moving = IsMoving() && !(IsRooted() || IsStunned() || IsMezzed());
 			auto t         = GetTarget();
 			if (is_moving && t) {
@@ -1150,6 +1154,18 @@ void Mob::AI_Process() {
 		bool is_combat_range = CombatRange(target);
 
 		if (is_combat_range) {
+			// Companion casters/healers that are holding position should not
+			// perform melee attacks when accidentally within melee range.
+			// UpdateCombatPositioning()'s retreat RunTo will pull them back.
+			// Cast spells from current position but skip all melee attack logic.
+			if (m_hold_combat_position) {
+				if (!IsMoving()) {
+					FaceTarget();
+				}
+				AI_EngagedCastCheck();
+			} else {
+			// Normal melee combat — stop, face, attack.
+
 			if (IsMoving()) {
 				StopNavigation();
 			}
@@ -1320,6 +1336,7 @@ void Mob::AI_Process() {
 			}
 			AI_EngagedCastCheck();
 
+			} // end else (!m_hold_combat_position)
 		}    //end is within combat rangepet
 		else {
 
@@ -1339,9 +1356,16 @@ void Mob::AI_Process() {
 						FaceTarget();
 					}
 				}
+				// Companion casters/healers: hold at spell range and use full engaged cast AI
+				else if (m_hold_combat_position) {
+					if (!IsMoving()) {
+						FaceTarget();
+					}
+					AI_EngagedCastCheck();
+				}
 				// mob/npc waits until call for help complete, others can move
 				else if (AI_movement_timer->Check() && target &&
-						(GetOwnerID() || IsBot() || IsTempPet() ||
+						(GetOwnerID() || IsBot() || IsCompanion() || IsTempPet() ||
 						CastToNPC()->GetCombatEvent())) {
 					if (!IsRooted()) {
 						LogAIDetail("Pursuing [{}] while engaged", target->GetName());
@@ -1476,7 +1500,22 @@ void Mob::AI_Process() {
 				}
 				else {
 
-					float distance        = DistanceSquared(m_Position, follow->GetPosition());
+					// Compute the goal position — apply formation offset for companions.
+					// The arc is centred directly in front of the owner (owner heading, no 180° flip).
+					// Conversion to radians: (heading / 512.0f) * 6.283184f (matches mob.cpp pattern).
+					float goal_x = follow->GetX();
+					float goal_y = follow->GetY();
+					float goal_z = follow->GetZ();
+
+					if (GetFollowAngleOffset() != 0.0f || IsCompanion()) {
+						float front_heading = std::fmod(follow->GetHeading() + GetFollowAngleOffset() + 512.0f, 512.0f);
+						float radians       = (front_heading / 512.0f) * 6.283184f;
+						float dist          = GetFollowFormationDistance();
+						goal_x += std::sin(radians) * dist;
+						goal_y += std::cos(radians) * dist;
+					}
+
+					float distance        = DistanceSquaredNoZ(m_Position, glm::vec4(goal_x, goal_y, goal_z, 0.0f));
 					int   follow_distance = GetFollowDistance();
 
 					/**
@@ -1489,13 +1528,11 @@ void Mob::AI_Process() {
 							running = true;
 						}
 
-						auto &Goal = follow->GetPosition();
-
 						if (running) {
-							RunTo(Goal.x, Goal.y, Goal.z);
+							RunTo(goal_x, goal_y, goal_z);
 						}
 						else {
-							WalkTo(Goal.x, Goal.y, Goal.z);
+							WalkTo(goal_x, goal_y, goal_z);
 						}
 					}
 					else {

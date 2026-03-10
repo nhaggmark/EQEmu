@@ -40,6 +40,7 @@
 #include "common/strings.h"
 #include "zone/bot.h"
 #include "zone/client.h"
+#include "zone/companion.h"
 #include "zone/entity.h"
 #include "zone/npc_scale_manager.h"
 #include "zone/quest_parser_collection.h"
@@ -136,6 +137,14 @@ NPC::NPC(const NPCType *npc_type_data, Spawn2 *in_respawn, const glm::vec4 &posi
 	//What is the point of this, since the names get mangled..
 	Mob *mob = entity_list.GetMob(name);
 	if (mob != nullptr) {
+		// Clear the mob from its group BEFORE removing it from the entity list.
+		// Without this, the group's members[] slot retains a dangling pointer
+		// after safe_delete, which causes use-after-free crashes in group
+		// iteration functions like QueueClients(). (BUG-011 layer-2 fix)
+		Group* g = entity_list.GetGroupByMob(mob);
+		if (g) {
+			g->MemberZoned(mob);
+		}
 		entity_list.RemoveEntity(mob->GetID());
 	}
 
@@ -681,7 +690,11 @@ bool NPC::Process()
 		}
 
 		if (GetMana() < GetMaxMana()) {
-			if (RuleB(NPC, UseMeditateBasedManaRegen)) {
+			if (IsCompanion()) {
+				// Companions use a player-like meditate formula instead of flat NPC regen.
+				int64 companion_mana_regen = CastToCompanion()->CalcManaRegen();
+				SetMana(std::min(GetMana() + companion_mana_regen, GetMaxMana()));
+			} else if (RuleB(NPC, UseMeditateBasedManaRegen)) {
 				int64 npc_idle_mana_regen_bonus = 2;
 				uint16 meditate_skill = GetSkill(EQ::skills::SkillMeditate);
 				if (!IsEngaged() && meditate_skill > 0) {

@@ -2827,6 +2827,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 			!GetSwarmInfo() &&
 			(!is_merchant || allow_merchant_corpse) &&
 			(
+				IsCompanion() ||        // Always create a corpse when a companion is killed
 				(
 					killer &&
 					(

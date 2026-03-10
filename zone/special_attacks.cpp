@@ -22,6 +22,7 @@
 #include "common/strings.h"
 #include "zone/bot.h"
 #include "zone/client.h"
+#include "zone/companion.h"
 #include "zone/entity.h"
 #include "zone/lua_parser.h"
 #include "zone/npc.h"
@@ -1914,6 +1915,21 @@ void NPC::DoClassAttacks(Mob *target) {
 		Taunt(target->CastToNPC(), false);
 	}
 
+	// Companion-specific taunt: warrior-class companions taunt independently
+	// of the pet ownership system. Uses the same taunt_timer cooldown but does
+	// not require HasOwner() or type_of_pet checks that companions don't satisfy.
+	if (
+		IsCompanion() &&
+		GetClass() == Class::Warrior &&
+		taunt_time &&
+		target->IsNPC() &&
+		target->GetBodyType() != BodyType::Undead &&
+		CombatRange(target)
+	) {
+		Companion::CompanionGroupSay(this, "Taunting %s!", target->GetCleanName());
+		Taunt(target->CastToNPC(), false);
+	}
+
 	if(!ca_time) {
 		return;
 	}
@@ -2027,6 +2043,26 @@ void NPC::DoClassAttacks(Mob *target) {
 			}
 			break;
 		}
+	}
+
+	// Companion combat logging: announce class attacks to the group.
+	// This fires once per class attack (kick, bash, backstab, etc.) so the
+	// player can see the companion is actively fighting.
+	if (did_attack && IsCompanion()) {
+		const char* ability_name = "attacks";
+		switch (GetClass()) {
+			case Class::Warrior:     ability_name = "Kicks/Bashes";  break;
+			case Class::Rogue:       ability_name = "Backstabs";     break;
+			case Class::Monk:        ability_name = "Strikes";       break;
+			case Class::Ranger:
+			case Class::Beastlord:   ability_name = "Kicks";         break;
+			case Class::Berserker:   ability_name = "Frenzies";      break;
+			case Class::Cleric:
+			case Class::ShadowKnight:
+			case Class::Paladin:     ability_name = "Bashes";        break;
+			default: break;
+		}
+		Companion::CompanionGroupSay(this, "%s %s!", ability_name, target->GetCleanName());
 	}
 
 	classattack_timer.Start(reuse / HasteModifier);

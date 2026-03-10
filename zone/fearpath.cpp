@@ -58,6 +58,15 @@ void Mob::CheckFlee()
 		return;
 	}
 
+	// Belt-and-suspenders guard: companions should never flee unless the rule
+	// explicitly permits it.  FleeingImmunity is set in the constructor, Spawn(),
+	// and every Process() tick, but this check catches any edge-case path that
+	// re-enables flee (e.g. a buff/debuff cycle clearing special abilities) before
+	// the next Process() tick can restore FleeingImmunity.
+	if (IsCompanion() && !RuleB(Companions, CompanionFleeEnabled)) {
+		return;
+	}
+
 	//if were already fleeing, we only need to check speed.  Speed changes will trigger pathing updates.
 	if (flee_mode && currently_fleeing) {
 		int flee_speed = GetFearSpeed();
