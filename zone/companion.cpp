@@ -1819,6 +1819,18 @@ bool Companion::GiveItem(uint32 item_id, int16 slot)
 	EQ::ItemInstance* inst = database.CreateItem(item_id);
 	if (inst) {
 		GetInv().PutItem(slot, *inst);
+
+		// Mirror the bow/arrow flag logic from loot.cpp so ranged-attack AI
+		// (HasBowAndArrowEquipped) works when equipment is given via GiveItem().
+		if (slot == EQ::invslot::slotRange && inst->GetItem() &&
+		    inst->GetItem()->ItemType == EQ::item::ItemTypeBow) {
+			SetBowEquipped(true);
+		}
+		if (slot == EQ::invslot::slotAmmo && inst->GetItem() &&
+		    inst->GetItem()->ItemType == EQ::item::ItemTypeArrow) {
+			SetArrowEquipped(true);
+		}
+
 		delete inst;
 	}
 
@@ -1871,6 +1883,18 @@ bool Companion::LoadEquipment()
 			EQ::ItemInstance* inst = database.CreateItem(row.item_id);
 			if (inst) {
 				GetInv().PutItem(static_cast<int16>(row.slot_id), *inst);
+
+				// Set ranged-attack AI flags so HasBowAndArrowEquipped() works
+				// on companions that had a bow/arrows saved from a previous session.
+				if (row.slot_id == EQ::invslot::slotRange && inst->GetItem() &&
+				    inst->GetItem()->ItemType == EQ::item::ItemTypeBow) {
+					SetBowEquipped(true);
+				}
+				if (row.slot_id == EQ::invslot::slotAmmo && inst->GetItem() &&
+				    inst->GetItem()->ItemType == EQ::item::ItemTypeArrow) {
+					SetArrowEquipped(true);
+				}
+
 				delete inst;
 			}
 		}
