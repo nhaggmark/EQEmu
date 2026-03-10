@@ -376,7 +376,7 @@ bool Companion::AI_HealGroupMember(bool engaged)
 	Client* owner = GetCompanionOwner();
 
 	for (int i = 0; i < MAX_GROUP_MEMBERS; i++) {
-		if (!g->members[i] || !g->members[i]->IsClient()) {
+		if (!g->members[i] || g->members[i]->GetHP() <= 0) {
 			continue;
 		}
 
