@@ -1028,7 +1028,10 @@ void Mob::AI_Process() {
 	}
 
 	if (engaged) {
-		if (IsNPC() && m_z_clip_check_timer.Check()) {
+		// Companions manage their own positioning via UpdateCombatPositioning() and
+		// formation follow — exempting them from the z-clip teleport prevents them
+		// from being forcibly moved to the target's X/Y when holding at spell range.
+		if (IsNPC() && !IsCompanion() && m_z_clip_check_timer.Check()) {
 			bool is_moving = IsMoving() && !(IsRooted() || IsStunned() || IsMezzed());
 			auto t         = GetTarget();
 			if (is_moving && t) {
@@ -1151,6 +1154,18 @@ void Mob::AI_Process() {
 		bool is_combat_range = CombatRange(target);
 
 		if (is_combat_range) {
+			// Companion casters/healers that are holding position should not
+			// perform melee attacks when accidentally within melee range.
+			// UpdateCombatPositioning()'s retreat RunTo will pull them back.
+			// Cast spells from current position but skip all melee attack logic.
+			if (m_hold_combat_position) {
+				if (!IsMoving()) {
+					FaceTarget();
+				}
+				AI_EngagedCastCheck();
+			} else {
+			// Normal melee combat — stop, face, attack.
+
 			if (IsMoving()) {
 				StopNavigation();
 			}
@@ -1321,6 +1336,7 @@ void Mob::AI_Process() {
 			}
 			AI_EngagedCastCheck();
 
+			} // end else (!m_hold_combat_position)
 		}    //end is within combat rangepet
 		else {
 

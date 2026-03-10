@@ -474,6 +474,16 @@ void Companion::AI_Start(uint32 iMoveDelay)
 {
 	NPC::AI_Start(iMoveDelay);
 
+	// Disable the NPC autocast spell timer — companions use their own spell AI
+	// (AI_EngagedCastCheck / AI_IdleCastCheck) and do not rely on the NPC spell
+	// list.  Leaving the timer enabled causes AI_PursueCastCheck() in the NPC
+	// base to fire periodically and attempt NPC::AICastSpell() with the wrong
+	// spell list.  AI_PursueCastCheck() is overridden to return false, but
+	// disabling the timer here is belt-and-suspenders insurance.
+	if (AIautocastspell_timer) {
+		AIautocastspell_timer->Disable();
+	}
+
 	// Load companion-specific spell list
 	LoadCompanionSpells();
 
@@ -647,11 +657,32 @@ void Companion::UpdateCombatPositioning()
 				}
 				m_hold_combat_position = true;
 			} else {
-				// Too close (< 50% of desired range) — hold and cast; mob will move
-				if (IsMoving()) {
-					StopNavigation();
+				// Too close (< 50% of desired range) — actively retreat to 70% of desired range
+				float desired_dist = range_f * 0.7f;
+				float dx = GetX() - target->GetX();  // direction AWAY from target
+				float dy = GetY() - target->GetY();
+				float len = std::sqrt(dx * dx + dy * dy);
+				if (len > 1.0f) {
+					// Move from the target's position outward along the away vector
+					float nx     = dx / len;
+					float ny     = dy / len;
+					float goal_x = target->GetX() + nx * desired_dist;
+					float goal_y = target->GetY() + ny * desired_dist;
+					RunTo(goal_x, goal_y, GetZ());
+				} else {
+					// Overlapping with target — retreat toward the owner as a tiebreaker
+					Client* retreat_owner = GetCompanionOwner();
+					if (retreat_owner) {
+						float ox   = retreat_owner->GetX() - target->GetX();
+						float oy   = retreat_owner->GetY() - target->GetY();
+						float olen = std::sqrt(ox * ox + oy * oy);
+						if (olen > 0.0f) {
+							float goal_x = target->GetX() + (ox / olen) * desired_dist;
+							float goal_y = target->GetY() + (oy / olen) * desired_dist;
+							RunTo(goal_x, goal_y, GetZ());
+						}
+					}
 				}
-				FaceTarget();
 				m_hold_combat_position = true;
 			}
 			break;
@@ -861,6 +892,18 @@ bool Companion::AI_IdleCastCheck()
 {
 	// Only buff/heal when idle
 	return AICastSpell(GetChanceToCastBySpellType(0), SpellType_Buff | SpellType_Heal | SpellType_Pet);
+}
+
+bool Companion::AI_PursueCastCheck()
+{
+	// Companions use their own spell AI via AI_EngagedCastCheck(), called from
+	// the m_hold_combat_position branch in AI_Process().  Always return false
+	// so the NPC version of AI_PursueCastCheck() (which fires the AIautocastspell
+	// timer and uses the wrong NPC spell list) never steals the tick.
+	// Returning false lets AI_Process() fall through to either the
+	// m_hold_combat_position branch (casters/healers) or the pursue-to-melee
+	// branch (melee roles) as appropriate.
+	return false;
 }
 
 // Companion::AICastSpell is implemented in companion_ai.cpp

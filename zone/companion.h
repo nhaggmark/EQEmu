@@ -119,6 +119,7 @@ public:
 	virtual void AI_Stop() override;
 	virtual void AI_Init() override;
 	virtual bool Process() override;
+	virtual bool AI_PursueCastCheck() override;
 	virtual bool AI_EngagedCastCheck() override;
 	virtual bool AI_IdleCastCheck() override;
 	virtual bool AICastSpell(int8 iChance, uint32 iSpellTypes);
