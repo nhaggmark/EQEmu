@@ -343,6 +343,7 @@ protected:
 	Timer m_evade_timer;
 	Timer m_retention_check_timer;
 	Timer m_death_despawn_timer;
+	Timer m_ping_timer;  // keep-alive: prevents client culling idle entities
 
 	// Equipment: array of item IDs indexed by EQ::invslot::EQUIPMENT slots
 	uint32 m_equipment[EQ::invslot::EQUIPMENT_COUNT];

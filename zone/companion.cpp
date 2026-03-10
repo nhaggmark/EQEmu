@@ -50,7 +50,8 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	  m_evade_timer(500),
 	  m_retention_check_timer(RuleI(Companions, MercRetentionCheckS) * 1000),
 	  m_death_despawn_timer(RuleI(Companions, DeathDespawnS) * 1000),
-	  m_replacement_spawn_timer(RuleI(Companions, ReplacementSpawnDelayS) * 1000)
+	  m_replacement_spawn_timer(RuleI(Companions, ReplacementSpawnDelayS) * 1000),
+	  m_ping_timer(5000)
 {
 	// Identity
 	m_companion_id          = 0;
@@ -110,6 +111,8 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	// Disable death despawn timer until death occurs
 	m_death_despawn_timer.Disable();
 	m_replacement_spawn_timer.Disable();
+	// Ping timer starts disabled; enabled in Process() when companion is stationary
+	m_ping_timer.Disable();
 
 	// Set flee immunity immediately in the constructor so there is no window
 	// between construction and Spawn() where flee can trigger.  Spawn() and
@@ -490,15 +493,13 @@ void Companion::AI_Start(uint32 iMoveDelay)
 {
 	NPC::AI_Start(iMoveDelay);
 
-	// Disable the NPC autocast spell timer — companions use their own spell AI
-	// (AI_EngagedCastCheck / AI_IdleCastCheck) and do not rely on the NPC spell
-	// list.  Leaving the timer enabled causes AI_PursueCastCheck() in the NPC
-	// base to fire periodically and attempt NPC::AICastSpell() with the wrong
-	// spell list.  AI_PursueCastCheck() is overridden to return false, but
-	// disabling the timer here is belt-and-suspenders insurance.
-	if (AIautocastspell_timer) {
-		AIautocastspell_timer->Disable();
-	}
+	// Keep AIautocastspell_timer enabled — it drives the NPC::AI_EngagedCastCheck()
+	// path which companions fall back to when m_companion_spells is empty.
+	// Companion::AI_PursueCastCheck() handles caster/healer spell casting when
+	// holding position at range, and Companion::AI_EngagedCastCheck() handles the
+	// in-melee-range cast path.  The NPC spell list may be empty for recruited NPCs
+	// that have no npc_spells_id, but that is harmless — the timer still needs to
+	// run so the companion's own AICastSpell() fires on schedule.
 
 	// Load companion-specific spell list
 	LoadCompanionSpells();
@@ -904,6 +905,22 @@ bool Companion::Process()
 		}
 	}
 
+	// Keep-alive position packet: the Titanium client culls (stops rendering) entities
+	// that have not sent a position update for ~5 seconds.  When a companion is
+	// stationary (holding position or following without moving), send a zero-delta
+	// position packet on a 5-second timer so the client keeps the entity visible.
+	// This mirrors the same pattern used by Bot::Process() (bot.cpp ~line 1737-1748).
+	if (IsMoving()) {
+		m_ping_timer.Disable();
+	} else {
+		if (!m_ping_timer.Enabled()) {
+			m_ping_timer.Start(5000);
+		}
+		if (m_ping_timer.Check()) {
+			SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0);
+		}
+	}
+
 	// Update class-based combat positioning before NPC::Process() runs AI_Process().
 	// For casters/healers this sets m_hold_combat_position to prevent default melee
 	// pursuit. For rogues this routes them behind the target. Must run after target
@@ -932,13 +949,22 @@ bool Companion::AI_IdleCastCheck()
 
 bool Companion::AI_PursueCastCheck()
 {
-	// Companions use their own spell AI via AI_EngagedCastCheck(), called from
-	// the m_hold_combat_position branch in AI_Process().  Always return false
-	// so the NPC version of AI_PursueCastCheck() (which fires the AIautocastspell
-	// timer and uses the wrong NPC spell list) never steals the tick.
-	// Returning false lets AI_Process() fall through to either the
-	// m_hold_combat_position branch (casters/healers) or the pursue-to-melee
-	// branch (melee roles) as appropriate.
+	// For casters and healers that hold position at range (m_hold_combat_position
+	// is set by UpdateCombatPositioning()), we cast spells from this distance
+	// rather than pursuing to melee.  Call our own AICastSpell() so the companion
+	// uses the companion_spell_sets data, not the NPC spell list.
+	//
+	// For melee roles (TANK, MELEE_DPS, ROGUE) we return false so AI_Process()
+	// falls through to the normal pursue-to-melee branch.
+	if (m_hold_combat_position) {
+		switch (m_combat_role) {
+			case COMBAT_ROLE_CASTER_DPS:
+			case COMBAT_ROLE_HEALER:
+				return AICastSpell(GetChanceToCastBySpellType(0), 0xFFFFFFFF);
+			default:
+				break;
+		}
+	}
 	return false;
 }
 
