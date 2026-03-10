@@ -339,6 +339,14 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 	// Let the base NPC death handling run first (creates corpse, etc.)
 	bool result = NPC::Death(killer_mob, damage, spell_id, attack_skill, killed_by, is_buff_tic);
 
+	// NPC::Death() unconditionally sets p_depop = true, which causes NPC::Process()
+	// to return false on the very next tick and immediately remove the entity.
+	// For companions we want the entity to persist in the world (as a dead entity)
+	// until m_death_despawn_timer fires in Companion::Process(), giving the player
+	// a window to resurrect them.  Reset p_depop here so NPC::Process() keeps
+	// returning true until the death despawn timer triggers cleanup.
+	SetDepop(false);
+
 	// Equipment persistence on death: if the rule is false, clear all equipment and
 	// return it to the owner. Default is true (equipment survives death).
 	if (!RuleB(Companions, EquipmentPersistsThroughDeath)) {
@@ -626,8 +634,23 @@ void Companion::UpdateCombatPositioning()
 		case COMBAT_ROLE_CASTER_DPS:
 		case COMBAT_ROLE_HEALER: {
 			int desired_range = RuleI(Companions, CasterCombatRange);
-			if (desired_range <= 0 || GetManaRatio() <= 10.0f) {
-				// OOM or rule disabled — fall back to default melee pursue
+			if (desired_range <= 0) {
+				// Rule disabled — fall back to default melee pursue
+				break;
+			}
+
+			if (GetManaRatio() <= 10.0f) {
+				// OOM — hold position rather than charging into melee.
+				// A caster with no mana standing at range is far better than a caster
+				// with no mana getting hit in melee.  They can still auto-attack from
+				// their current position and will resume casting when mana regenerates.
+				if (IsMoving()) {
+					StopNavigation();
+				}
+				if (GetTarget()) {
+					FaceTarget(GetTarget());
+				}
+				m_hold_combat_position = true;
 				break;
 			}
 

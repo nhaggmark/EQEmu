@@ -462,6 +462,7 @@ public:
 	void ClearLastName();
 
 	bool GetDepop() { return p_depop; }
+	void SetDepop(bool v) { p_depop = v; }
 
 	void NPCSlotTexture(uint8 slot, uint32 texture);	// Sets new material values for slots
 
