@@ -149,6 +149,36 @@ void Lua_Companion::SoulWipe()
 }
 
 // -------------------------------------------------------
+// Combat stats (exposed from NPC base on Lua_Companion
+// because Lua_Companion does not inherit Lua_NPC)
+// -------------------------------------------------------
+
+// GetMinDMG and GetMaxDMG are defined on NPC (the C++ parent) but are exposed
+// through Lua_NPC, not Lua_Mob. Since Lua_Companion inherits Lua_Mob (not
+// Lua_NPC), they must be explicitly added here so Lua scripts can call them on
+// companion objects.
+
+uint32 Lua_Companion::GetMinDMG()
+{
+	Lua_Safe_Call_Int();
+	return self->GetMinDMG();
+}
+
+uint32 Lua_Companion::GetMaxDMG()
+{
+	Lua_Safe_Call_Int();
+	return self->GetMaxDMG();
+}
+
+// GetCombatRole returns the CompanionCombatRole enum value cast to uint8
+// (0=MeleeTank, 1=MeleeDPS, 2=Rogue, 3=CasterDPS, 4=Healer).
+uint8 Lua_Companion::GetCombatRole()
+{
+	Lua_Safe_Call_Int();
+	return static_cast<uint8>(self->GetCombatRole());
+}
+
+// -------------------------------------------------------
 // Equipment listing / retrieval
 // -------------------------------------------------------
 
@@ -254,7 +284,10 @@ luabind::scope lua_register_companion() {
 	.def("GetRecruitedZoneID",     &Lua_Companion::GetRecruitedZoneID)
 	.def("GetStance",              &Lua_Companion::GetStance)
 	.def("GetTimeActive",          &Lua_Companion::GetTimeActive)
+	.def("GetCombatRole",          &Lua_Companion::GetCombatRole)
 	.def("GetEquipment",           &Lua_Companion::GetEquipment)
+	.def("GetMaxDMG",              &Lua_Companion::GetMaxDMG)
+	.def("GetMinDMG",              &Lua_Companion::GetMinDMG)
 	.def("GetXPForNextLevel",      &Lua_Companion::GetXPForNextLevel)
 	.def("GiveAll",                &Lua_Companion::GiveAll)
 	.def("GiveItem",               &Lua_Companion::GiveItem)

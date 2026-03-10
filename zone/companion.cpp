@@ -31,6 +31,7 @@
 #include "zone/groups.h"
 #include "zone/mob.h"
 #include "zone/quest_parser_collection.h"
+#include "zone/questmgr.h"
 #include "zone/string_ids.h"
 #include "zone/zone.h"
 
@@ -1975,38 +1976,54 @@ void Companion::ShowEquipment(Client* client)
 		return;
 	}
 
-	client->Message(Chat::Yellow, "%s's Equipment:", GetCleanName());
+	client->Message(Chat::Yellow, "=== %s - Equipment ===", GetCleanName());
 
 	// 19-slot display order per PRD. Charm, Ear1, Ear2 are omitted from display
 	// (still stored and apply stats, just not shown per design).
-	static const struct { int16 slot; const char* label; } kDisplaySlots[] = {
-		{ EQ::invslot::slotHead,      "Head"      },
-		{ EQ::invslot::slotFace,      "Face"      },
-		{ EQ::invslot::slotNeck,      "Neck"      },
-		{ EQ::invslot::slotShoulders, "Shoulders" },
-		{ EQ::invslot::slotChest,     "Chest"     },
-		{ EQ::invslot::slotBack,      "Back"      },
-		{ EQ::invslot::slotArms,      "Arms"      },
-		{ EQ::invslot::slotWrist1,    "Wrist 1"   },
-		{ EQ::invslot::slotWrist2,    "Wrist 2"   },
-		{ EQ::invslot::slotHands,     "Hands"     },
-		{ EQ::invslot::slotFinger1,   "Finger 1"  },
-		{ EQ::invslot::slotFinger2,   "Finger 2"  },
-		{ EQ::invslot::slotLegs,      "Legs"      },
-		{ EQ::invslot::slotFeet,      "Feet"      },
-		{ EQ::invslot::slotWaist,     "Waist"     },
-		{ EQ::invslot::slotPrimary,   "Primary"   },
-		{ EQ::invslot::slotSecondary, "Secondary" },
-		{ EQ::invslot::slotRange,     "Range"     },
-		{ EQ::invslot::slotAmmo,      "Ammo"      },
+	static const struct { int16 slot; const char* label; bool is_weapon; } kDisplaySlots[] = {
+		{ EQ::invslot::slotHead,      "Head",      false },
+		{ EQ::invslot::slotFace,      "Face",      false },
+		{ EQ::invslot::slotNeck,      "Neck",      false },
+		{ EQ::invslot::slotShoulders, "Shoulders", false },
+		{ EQ::invslot::slotChest,     "Chest",     false },
+		{ EQ::invslot::slotBack,      "Back",      false },
+		{ EQ::invslot::slotArms,      "Arms",      false },
+		{ EQ::invslot::slotWrist1,    "Wrist 1",   false },
+		{ EQ::invslot::slotWrist2,    "Wrist 2",   false },
+		{ EQ::invslot::slotHands,     "Hands",     false },
+		{ EQ::invslot::slotFinger1,   "Finger 1",  false },
+		{ EQ::invslot::slotFinger2,   "Finger 2",  false },
+		{ EQ::invslot::slotLegs,      "Legs",      false },
+		{ EQ::invslot::slotFeet,      "Feet",      false },
+		{ EQ::invslot::slotWaist,     "Waist",     false },
+		{ EQ::invslot::slotPrimary,   "Primary",   true  },
+		{ EQ::invslot::slotSecondary, "Secondary", true  },
+		{ EQ::invslot::slotRange,     "Range",     true  },
+		{ EQ::invslot::slotAmmo,      "Ammo",      false },
 	};
 
 	for (const auto& entry : kDisplaySlots) {
 		uint32 item_id = m_equipment[entry.slot];
 		if (item_id != 0) {
 			const EQ::ItemData* item = database.GetItem(item_id);
-			const char* item_name = item ? item->Name : "(unknown item)";
-			client->Message(Chat::White, "  %-12s %s", entry.label, item_name);
+			if (!item) {
+				client->Message(Chat::White, "  %-12s (unknown item)", entry.label);
+				continue;
+			}
+			// Generate a clickable item link via quest_manager (safe to call
+			// without active quest context — varlink only uses database.CreateItem
+			// and EQ::SayLinkEngine, not the quest initiator).
+			std::string link = quest_manager.varlink(item_id);
+			if (entry.is_weapon && item->Damage > 0) {
+				client->Message(Chat::White, "  %-12s %s (Dmg: %d  Delay: %d)",
+				    entry.label, link.c_str(), item->Damage, item->Delay);
+			} else if (!entry.is_weapon && item->AC > 0) {
+				client->Message(Chat::White, "  %-12s %s (AC: %d)",
+				    entry.label, link.c_str(), item->AC);
+			} else {
+				client->Message(Chat::White, "  %-12s %s",
+				    entry.label, link.c_str());
+			}
 		} else {
 			client->Message(Chat::White, "  %-12s (empty)", entry.label);
 		}

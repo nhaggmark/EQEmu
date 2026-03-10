@@ -83,6 +83,14 @@ public:
 	void SoulWipe();
 
 	// -------------------------------------------------------
+	// Combat stats (exposed from NPC base on Lua_Companion
+	// because Lua_Companion does not inherit Lua_NPC)
+	// -------------------------------------------------------
+	uint32 GetMinDMG();
+	uint32 GetMaxDMG();
+	uint8  GetCombatRole();
+
+	// -------------------------------------------------------
 	// Equipment listing / retrieval
 	// -------------------------------------------------------
 	void ShowEquipment(Lua_Client client);
