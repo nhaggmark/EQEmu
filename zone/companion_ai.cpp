@@ -254,7 +254,13 @@ bool Companion::LoadCompanionSpells()
 // ============================================================
 bool Companion::AICastSpell(int8 iChance, uint32 iSpellTypes)
 {
+	LogAIDetail("Companion [{}] AICastSpell: spells=[{}] chance=[{}] types=[{}] target=[{}] engaged=[{}] mana=[{:.0f}%%] class=[{}]",
+	            GetName(), m_companion_spells.size(), iChance, iSpellTypes,
+	            GetTarget() ? GetTarget()->GetName() : "none",
+	            IsEngaged(), GetManaRatio(), GetClass());
+
 	if (m_companion_spells.empty()) {
+		LogAIDetail("Companion [{}] AICastSpell: no companion spells, falling back to NPC::AI_EngagedCastCheck", GetName());
 		// No companion spells loaded — fall back to base NPC AI
 		// (NPC uses its native npc_spells_id entries)
 		return NPC::AI_EngagedCastCheck();
@@ -262,7 +268,9 @@ bool Companion::AICastSpell(int8 iChance, uint32 iSpellTypes)
 
 	// Chance roll (like Merc: 0-100 integer check)
 	if (iChance < 100) {
-		if (zone->random.Int(0, 100) > iChance) {
+		int roll = zone->random.Int(0, 100);
+		if (roll > iChance) {
+			LogAIDetail("Companion [{}] AICastSpell: chance roll failed (rolled [{}] > chance [{}])", GetName(), roll, iChance);
 			return false;
 		}
 	}
@@ -272,6 +280,7 @@ bool Companion::AICastSpell(int8 iChance, uint32 iSpellTypes)
 	uint8 comp_class = GetClass();
 	bool has_mana = (GetMaxMana() > 0);
 	if (has_mana && GetManaRatio() < 10.0f) {
+		LogAIDetail("Companion [{}] AICastSpell: OOM bail (mana=[{:.0f}%%] < 10%%)", GetName(), GetManaRatio());
 		return false;
 	}
 
@@ -536,6 +545,9 @@ bool Companion::AI_NukeTarget(uint32 nuke_types)
 {
 	Mob* target = GetTarget();
 	if (!target || target->GetHP() <= 0) {
+		LogAIDetail("Companion [{}] AI_NukeTarget: no valid target (target=[{}] HP=[{}])",
+		            GetName(), target ? target->GetName() : "none",
+		            target ? (int64)target->GetHP() : 0);
 		return false;
 	}
 
@@ -543,13 +555,19 @@ bool Companion::AI_NukeTarget(uint32 nuke_types)
 	uint16 nuke_spell = SelectFirstSpell(m_companion_spells, nuke_types, m_current_stance, now_ms);
 
 	if (!nuke_spell) {
+		LogAIDetail("Companion [{}] AI_NukeTarget: no spell available for types=[{}] stance=[{}]",
+		            GetName(), nuke_types, m_current_stance);
 		return false;
 	}
 
 	// Range check
 	float dist2 = DistanceSquared(m_Position, target->GetPosition());
 	float range  = GetActSpellRange(nuke_spell, spells[nuke_spell].range);
+	LogAIDetail("Companion [{}] AI_NukeTarget: spell=[{}] ({}) dist2=[{:.1f}] range=[{:.1f}] range2=[{:.1f}]",
+	            GetName(), nuke_spell, spells[nuke_spell].name,
+	            dist2, range, range * range);
 	if (dist2 > range * range) {
+		LogAIDetail("Companion [{}] AI_NukeTarget: out of range for spell [{}]", GetName(), nuke_spell);
 		return false;
 	}
 

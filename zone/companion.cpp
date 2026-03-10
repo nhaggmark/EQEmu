@@ -51,7 +51,8 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	  m_retention_check_timer(RuleI(Companions, MercRetentionCheckS) * 1000),
 	  m_death_despawn_timer(RuleI(Companions, DeathDespawnS) * 1000),
 	  m_replacement_spawn_timer(RuleI(Companions, ReplacementSpawnDelayS) * 1000),
-	  m_ping_timer(5000)
+	  m_ping_timer(5000),
+	  m_mana_report_timer(15000)
 {
 	// Identity
 	m_companion_id          = 0;
@@ -113,6 +114,8 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	m_replacement_spawn_timer.Disable();
 	// Ping timer starts disabled; enabled in Process() when companion is stationary
 	m_ping_timer.Disable();
+	// Mana report timer starts disabled; enabled when companion sits to med
+	m_mana_report_timer.Disable();
 
 	// Set flee immunity immediately in the constructor so there is no window
 	// between construction and Spawn() where flee can trigger.  Spawn() and
@@ -493,16 +496,22 @@ void Companion::AI_Start(uint32 iMoveDelay)
 {
 	NPC::AI_Start(iMoveDelay);
 
-	// Keep AIautocastspell_timer enabled — it drives the NPC::AI_EngagedCastCheck()
-	// path which companions fall back to when m_companion_spells is empty.
-	// Companion::AI_PursueCastCheck() handles caster/healer spell casting when
-	// holding position at range, and Companion::AI_EngagedCastCheck() handles the
-	// in-melee-range cast path.  The NPC spell list may be empty for recruited NPCs
-	// that have no npc_spells_id, but that is harmless — the timer still needs to
-	// run so the companion's own AICastSpell() fires on schedule.
-
-	// Load companion-specific spell list
+	// Load companion-specific spell list from companion_spell_sets.
+	// NPC::AI_Start() above disabled AIautocastspell_timer when AIspells is empty
+	// (which is true for most recruited NPCs that have no npc_spells_id).
+	// After loading companion spells we re-enable the timer so the cast-check
+	// overrides (AI_EngagedCastCheck, AI_PursueCastCheck, AI_IdleCastCheck) fire
+	// on schedule.  Without this the timer stays disabled and companions stand
+	// idle on initial spawn — they only cast after a level-up which calls
+	// LoadCompanionSpells() directly and re-arms the timer via a separate path.
 	LoadCompanionSpells();
+
+	// Re-arm cast timer if companion spells were loaded.  The timer controls
+	// how frequently Mob::AI_Process() calls the cast-check path; without it
+	// the companion never casts on initial spawn.
+	if (!m_companion_spells.empty() && AIautocastspell_timer) {
+		AIautocastspell_timer->Start(RandomTimer(0, 500), false);
+	}
 
 	// Seed hp_regen so that companions whose npc_types row has hp_regen_rate=0
 	// still regenerate HP.  CalcHPRegen() returns the greater of the NPC's
@@ -789,6 +798,22 @@ bool Companion::Process()
 				InterruptSpell();
 			}
 		}
+		// Sit/stand with owner even in passive stance
+		if (!IsEngaged() && !IsMoving() && owner && owner->IsClient()) {
+			bool owner_sitting = (owner->GetAppearance() == eaSitting);
+			if (owner_sitting && !IsSitting()) {
+				Sit();
+			} else if (!owner_sitting && IsSitting()) {
+				Stand();
+			}
+		}
+		// Mana report for passive casters/healers sitting
+		if (IsSitting() &&
+		    (m_combat_role == COMBAT_ROLE_CASTER_DPS || m_combat_role == COMBAT_ROLE_HEALER) &&
+		    GetMaxMana() > 0 &&
+		    m_mana_report_timer.Check()) {
+			CompanionGroupSay(this, "Mana: %d%%", static_cast<int>(GetManaRatio()));
+		}
 		// Skip all assist logic — fall through to NPC::Process() for regen and movement
 		return NPC::Process();
 	}
@@ -921,6 +946,33 @@ bool Companion::Process()
 		}
 	}
 
+	// Sit when owner sits (med/rest synchronization).
+	// Only when out of combat and the companion is not moving.
+	// Casters/healers sit to regen mana; all companions sit to show idle state.
+	if (!IsEngaged() && !IsMoving()) {
+		if (owner && owner->IsClient()) {
+			bool owner_sitting = (owner->GetAppearance() == eaSitting);
+			bool companion_sitting = IsSitting();
+			if (owner_sitting && !companion_sitting) {
+				Sit();
+			} else if (!owner_sitting && companion_sitting) {
+				Stand();
+			}
+		}
+	} else if (IsEngaged() && IsSitting()) {
+		// Stand when entering combat
+		Stand();
+	}
+
+	// Mana report via group say while sitting (casters/healers only).
+	if (IsSitting() && !IsEngaged() &&
+	    (m_combat_role == COMBAT_ROLE_CASTER_DPS || m_combat_role == COMBAT_ROLE_HEALER) &&
+	    GetMaxMana() > 0 &&
+	    m_mana_report_timer.Check()) {
+		int mana_pct = static_cast<int>(GetManaRatio());
+		CompanionGroupSay(this, "Mana: %d%%", mana_pct);
+	}
+
 	// Update class-based combat positioning before NPC::Process() runs AI_Process().
 	// For casters/healers this sets m_hold_combat_position to prevent default melee
 	// pursuit. For rogues this routes them behind the target. Must run after target
@@ -937,6 +989,10 @@ bool Companion::Process()
 
 bool Companion::AI_EngagedCastCheck()
 {
+	LogAIDetail("Companion [{}] AI_EngagedCastCheck: spells=[{}] target=[{}] engaged=[{}] mana=[{:.0f}%%]",
+	            GetName(), m_companion_spells.size(),
+	            GetTarget() ? GetTarget()->GetName() : "none",
+	            IsEngaged(), GetManaRatio());
 	// Delegate to the companion spell AI in companion_ai.cpp
 	return AICastSpell(GetChanceToCastBySpellType(0), 0xFFFFFFFF);
 }
@@ -949,6 +1005,11 @@ bool Companion::AI_IdleCastCheck()
 
 bool Companion::AI_PursueCastCheck()
 {
+	LogAIDetail("Companion [{}] AI_PursueCastCheck: hold=[{}] role=[{}] spells=[{}] target=[{}] engaged=[{}] mana=[{:.0f}%%]",
+	            GetName(), m_hold_combat_position, static_cast<int>(m_combat_role),
+	            m_companion_spells.size(),
+	            GetTarget() ? GetTarget()->GetName() : "none",
+	            IsEngaged(), GetManaRatio());
 	// For casters and healers that hold position at range (m_hold_combat_position
 	// is set by UpdateCombatPositioning()), we cast spells from this distance
 	// rather than pursuing to melee.  Call our own AICastSpell() so the companion
@@ -960,8 +1021,10 @@ bool Companion::AI_PursueCastCheck()
 		switch (m_combat_role) {
 			case COMBAT_ROLE_CASTER_DPS:
 			case COMBAT_ROLE_HEALER:
+				LogAIDetail("Companion [{}] AI_PursueCastCheck: holding position, attempting AICastSpell", GetName());
 				return AICastSpell(GetChanceToCastBySpellType(0), 0xFFFFFFFF);
 			default:
+				LogAIDetail("Companion [{}] AI_PursueCastCheck: melee role [{}], not casting from pursue", GetName(), static_cast<int>(m_combat_role));
 				break;
 		}
 	}
@@ -973,6 +1036,14 @@ bool Companion::AI_PursueCastCheck()
 bool Companion::AIDoSpellCast(uint16 spellid, Mob* tar, int32 mana_cost,
                               uint32* oDontDoAgainBefore)
 {
+	LogAIDetail("Companion [{}] AIDoSpellCast: spell=[{}] ({}) target=[{}] mana_cost=[{}] currently_casting=[{}] mana=[{:.0f}%%]",
+	            GetName(), spellid,
+	            IsValidSpell(spellid) ? spells[spellid].name : "INVALID",
+	            tar ? tar->GetName() : "none",
+	            mana_cost,
+	            casting_spell_id,
+	            GetManaRatio());
+
 	// Group-say combat logging: announce spell cast to the group so the player
 	// can see what the companion is doing.
 	if (IsValidSpell(spellid) && tar) {
@@ -987,8 +1058,11 @@ bool Companion::AIDoSpellCast(uint16 spellid, Mob* tar, int32 mana_cost,
 		}
 	}
 
-	return CastSpell(spellid, tar ? tar->GetID() : 0, EQ::spells::CastingSlot::Gem2,
-	                 -1, mana_cost, oDontDoAgainBefore);
+	bool result = CastSpell(spellid, tar ? tar->GetID() : 0, EQ::spells::CastingSlot::Gem2,
+	                        -1, mana_cost, oDontDoAgainBefore);
+	LogAIDetail("Companion [{}] AIDoSpellCast: spell=[{}] CastSpell result=[{}]",
+	            GetName(), spellid, result);
+	return result;
 }
 
 // ============================================================
@@ -2330,12 +2404,14 @@ bool Companion::CheckSpellRecastTimers(uint16 spellid)
 
 void Companion::Sit()
 {
-	SetAppearance(eaStanding); // Will use correct appearance
+	SetAppearance(eaSitting);
+	m_mana_report_timer.Start(15000);
 }
 
 void Companion::Stand()
 {
 	SetAppearance(eaStanding);
+	m_mana_report_timer.Disable();
 }
 
 bool Companion::IsSitting() const

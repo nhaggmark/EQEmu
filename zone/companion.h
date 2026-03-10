@@ -343,7 +343,8 @@ protected:
 	Timer m_evade_timer;
 	Timer m_retention_check_timer;
 	Timer m_death_despawn_timer;
-	Timer m_ping_timer;  // keep-alive: prevents client culling idle entities
+	Timer m_ping_timer;          // keep-alive: prevents client culling idle entities
+	Timer m_mana_report_timer;   // mana % report via group say while sitting (15s interval)
 
 	// Equipment: array of item IDs indexed by EQ::invslot::EQUIPMENT slots
 	uint32 m_equipment[EQ::invslot::EQUIPMENT_COUNT];
