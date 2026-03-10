@@ -111,6 +111,14 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	m_death_despawn_timer.Disable();
 	m_replacement_spawn_timer.Disable();
 
+	// Set flee immunity immediately in the constructor so there is no window
+	// between construction and Spawn() where flee can trigger.  Spawn() and
+	// Process() re-apply this based on the live rule value, but the constructor
+	// guard ensures the companion is never fleable even if Spawn() is delayed.
+	if (!RuleB(Companions, CompanionFleeEnabled)) {
+		SetSpecialAbility(SpecialAbility::FleeingImmunity, 1);
+	}
+
 	// Determine combat role from class for positioning logic
 	m_combat_role = DetermineRoleFromClass(GetClass());
 
