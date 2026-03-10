@@ -223,6 +223,16 @@ public:
 	int64 CalcHPRegen() const;
 
 	// -------------------------------------------------------
+	// Mana Regen
+	// -------------------------------------------------------
+	// Computes the per-tic mana regeneration amount for this companion.
+	// Mirrors Bot::CalcManaRegen(): sitting non-melee casters use the meditate
+	// formula; standing uses a flat base rate.  Spell/item bonuses are included.
+	// Returns 0 for non-mana-using classes (warriors, rogues, etc.).
+	// Scaled by Character:ManaRegenMultiplier then Companions:CompanionManaRegenMult.
+	int64 CalcManaRegen();
+
+	// -------------------------------------------------------
 	// Stat Scaling
 	// -------------------------------------------------------
 	// Scales stats from recruited_level to current_level using float division:

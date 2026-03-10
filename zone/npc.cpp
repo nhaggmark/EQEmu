@@ -40,6 +40,7 @@
 #include "common/strings.h"
 #include "zone/bot.h"
 #include "zone/client.h"
+#include "zone/companion.h"
 #include "zone/entity.h"
 #include "zone/npc_scale_manager.h"
 #include "zone/quest_parser_collection.h"
@@ -689,7 +690,11 @@ bool NPC::Process()
 		}
 
 		if (GetMana() < GetMaxMana()) {
-			if (RuleB(NPC, UseMeditateBasedManaRegen)) {
+			if (IsCompanion()) {
+				// Companions use a player-like meditate formula instead of flat NPC regen.
+				int64 companion_mana_regen = CastToCompanion()->CalcManaRegen();
+				SetMana(std::min(GetMana() + companion_mana_regen, GetMaxMana()));
+			} else if (RuleB(NPC, UseMeditateBasedManaRegen)) {
 				int64 npc_idle_mana_regen_bonus = 2;
 				uint16 meditate_skill = GetSkill(EQ::skills::SkillMeditate);
 				if (!IsEngaged() && meditate_skill > 0) {

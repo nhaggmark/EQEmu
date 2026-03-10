@@ -484,6 +484,45 @@ int64 Companion::CalcHPRegen() const
 }
 
 // ============================================================
+// Mana Regen
+// ============================================================
+
+int64 Companion::CalcManaRegen()
+{
+	// Non-mana users: warriors, rogues, berserkers have no max mana.
+	if (GetMaxMana() <= 0) {
+		return 0;
+	}
+
+	uint8 level    = GetLevel();
+	uint8 cls      = GetClass();
+	int32 regen    = 2; // flat standing base
+
+	// Bards regenerate slowly whether sitting or standing
+	if (cls == Class::Bard) {
+		regen = IsSitting() ? 2 : 1;
+		regen += itembonuses.ManaRegen + aabonuses.ManaRegen;
+		return static_cast<int64>(regen);
+	}
+
+	// Sitting non-melee casters use the meditate formula
+	if (IsSitting()) {
+		if (GetArchetype() != Archetype::Melee) {
+			uint16 meditate = GetSkill(EQ::skills::SkillMeditate);
+			regen = (((meditate / 10) + (level - (level / 4))) / 4) + 4;
+		}
+	}
+
+	regen += spellbonuses.ManaRegen + itembonuses.ManaRegen + aabonuses.ManaRegen;
+
+	// Apply global character regen multiplier then companion-specific multiplier
+	regen = (regen * RuleI(Character, ManaRegenMultiplier)) / 100;
+	regen = (regen * RuleI(Companions, CompanionManaRegenMult)) / 100;
+
+	return static_cast<int64>(regen);
+}
+
+// ============================================================
 // AI Overrides
 // ============================================================
 

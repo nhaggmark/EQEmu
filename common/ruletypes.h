@@ -1198,6 +1198,7 @@ RULE_INT(Companions, DismissedRetentionDays, 30, "Days a dismissed companion's d
 RULE_REAL(Companions, CompanionSelfPreservePct, 0.20, "HP percentage below which a companion-type NPC uses self-preservation behaviors (retreat, defensive stance)")
 RULE_REAL(Companions, MercSelfPreservePct, 0.10, "HP percentage below which a mercenary-type companion uses self-preservation behaviors")
 RULE_INT(Companions, HPRegenPerTic, 1, "Minimum HP regenerated per 6-second tic for companions with 0 hp_regen_rate in npc_types")
+RULE_INT(Companions, CompanionManaRegenMult, 100, "Companion mana regen multiplier (percentage, 100 = no scaling). Applied after Character:ManaRegenMultiplier.")
 RULE_INT(Companions, OOCRegenPct, 5, "Out-of-combat HP regen as percentage of max HP per tic (added on top of HPRegenPerTic when not engaged)")
 RULE_INT(Companions, RecallCooldownS, 30, "Cooldown in seconds before a companion can be recalled again via !recall")
 RULE_BOOL(Companions, GroupChatAddressingEnabled, true, "Enable @Name companion addressing via /gsay group chat")
