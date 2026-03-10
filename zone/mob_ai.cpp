@@ -1365,7 +1365,7 @@ void Mob::AI_Process() {
 				}
 				// mob/npc waits until call for help complete, others can move
 				else if (AI_movement_timer->Check() && target &&
-						(GetOwnerID() || IsBot() || IsTempPet() ||
+						(GetOwnerID() || IsBot() || IsCompanion() || IsTempPet() ||
 						CastToNPC()->GetCombatEvent())) {
 					if (!IsRooted()) {
 						LogAIDetail("Pursuing [{}] while engaged", target->GetName());

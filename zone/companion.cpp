@@ -910,7 +910,12 @@ bool Companion::Process()
 	// selection so GetTarget() is current.
 	UpdateCombatPositioning();
 
-	return NPC::Process();
+	bool npc_result = NPC::Process();
+	if (!npc_result) {
+		LogInfo("Companion [{}] (id {}) NPC::Process() returned false — npc_depop=[{}] companion_depop=[{}] IsEngaged=[{}] HP=[{}]",
+		        GetName(), GetID(), (int)NPC::GetDepop(), (int)m_depop, (int)IsEngaged(), GetHP());
+	}
+	return npc_result;
 }
 
 bool Companion::AI_EngagedCastCheck()
@@ -942,6 +947,20 @@ bool Companion::AI_PursueCastCheck()
 bool Companion::AIDoSpellCast(uint16 spellid, Mob* tar, int32 mana_cost,
                               uint32* oDontDoAgainBefore)
 {
+	// Group-say combat logging: announce spell cast to the group so the player
+	// can see what the companion is doing.
+	if (IsValidSpell(spellid) && tar) {
+		const char* spell_name = spells[spellid].name;
+		int mana_pct = GetMaxMana() > 0 ? static_cast<int>(GetManaRatio()) : 100;
+		if (tar == this) {
+			CompanionGroupSay(this, "Casting %s on myself [Mana: %d%%]",
+			                  spell_name, mana_pct);
+		} else {
+			CompanionGroupSay(this, "Casting %s on %s [Mana: %d%%]",
+			                  spell_name, tar->GetCleanName(), mana_pct);
+		}
+	}
+
 	return CastSpell(spellid, tar ? tar->GetID() : 0, EQ::spells::CastingSlot::Gem2,
 	                 -1, mana_cost, oDontDoAgainBefore);
 }
