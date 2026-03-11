@@ -19,6 +19,7 @@
 #pragma once
 
 #include "zone/npc.h"
+#include <algorithm>
 #include <string>
 
 class Client;
@@ -126,6 +127,43 @@ public:
 	// The conversion factor is scaled by level, class archetype, and the
 	// Companions::STAToHPFactor rule.
 	virtual int64 CalcMaxHP() override;
+
+	// -------------------------------------------------------
+	// Resist cap overrides — Phase 5
+	// -------------------------------------------------------
+	// Companions use Client-style resist caps to prevent immunity stacking.
+	// Base cap formula: level * 5 + ResistCapBase (default 50).
+	// GetMaxResist() returns the cap; Get{X}R() enforce it.
+	// Setting ResistCapBase to 0 disables capping (returns 32000).
+	int32 GetMaxResist() const;
+	inline int32 GetMR() const override {
+		return std::min(MR + itembonuses.MR + spellbonuses.MR, GetMaxResist());
+	}
+	inline int32 GetFR() const override {
+		return std::min(FR + itembonuses.FR + spellbonuses.FR, GetMaxResist());
+	}
+	inline int32 GetDR() const override {
+		return std::min(DR + itembonuses.DR + spellbonuses.DR, GetMaxResist());
+	}
+	inline int32 GetPR() const override {
+		return std::min(PR + itembonuses.PR + spellbonuses.PR, GetMaxResist());
+	}
+	inline int32 GetCR() const override {
+		return std::min(CR + itembonuses.CR + spellbonuses.CR, GetMaxResist());
+	}
+
+	// -------------------------------------------------------
+	// Focus effect override — Phase 5
+	// -------------------------------------------------------
+	// Companions use the Mob base class GetFocusEffect() instead of the
+	// NPC override. The NPC override (a) gates item focus behind
+	// NPC_UseFocusFromItems rule (default false), and (b) reads items
+	// from the NPC equipment[] array instead of the inventory profile.
+	// Both are wrong for companions. The Mob base implementation uses
+	// GetInv().GetItem() (correct for companions) and has no rule gate.
+	int64 GetFocusEffect(focusType type, uint16 spell_id,
+	                     Mob *caster = nullptr,
+	                     bool from_buff_tic = false) override;
 
 	// -------------------------------------------------------
 	// Combat overrides — triple attack (Phase 2)

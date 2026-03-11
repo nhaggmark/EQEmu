@@ -1236,6 +1236,10 @@ RULE_INT(Companions, HealerManaConservePct, 30,
 	"Phase 4: Mana percentage below which healer companions switch to their "
 	"most mana-efficient heal spell (default 30). Above this threshold, healers "
 	"use their best/fastest heal. Below it, they use the cheapest available heal.")
+RULE_INT(Companions, ResistCapBase, 50,
+	"Phase 5: Base value for companion resist cap formula. "
+	"Cap = level * 5 + this value. At level 60 with default 50, cap is 350. "
+	"Set to 0 to disable resist capping entirely.")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

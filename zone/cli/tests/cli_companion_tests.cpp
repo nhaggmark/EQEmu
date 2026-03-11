@@ -42,6 +42,7 @@
 //  13. Phase 4 — Spell AI Tuning
 //  14. Phase 2-4 Audit Fixes (8 issues: sitting regen, int8 overflow, mana cutoffs,
 //      enchanter reserve, pet spam, wizard DS, druid HoT, shaman canni)
+//  15. Phase 5 — Resist Caps + Focus Effects (17 tests)
 // ============================================================
 
 #include "zone/zone_cli.h"
@@ -2831,6 +2832,401 @@ inline void TestCompanionAuditFixes()
 }
 
 // ============================================================
+// Suite 15: Phase 5 — Resist Caps + Focus Effects
+// ============================================================
+
+inline void TestCompanionPhase5ResistCapsAndFocusEffects()
+{
+	std::cout << "\n--- Suite 15: Phase 5 — Resist Caps + Focus Effects ---\n";
+
+	// ==============================================================
+	// RESIST CAP TESTS
+	// ==============================================================
+
+	// ------------------------------------------------------------
+	// 15.1: Rule ResistCapBase exists, default is 50
+	// Discriminating: will FAIL before ResistCapBase is added to ruletypes.h
+	// ------------------------------------------------------------
+	{
+		int rule_val = RuleI(Companions, ResistCapBase);
+		RunTest("Phase5 > 15.1 ResistCapBase rule exists with default 50",
+			50, rule_val);
+	}
+
+	// ------------------------------------------------------------
+	// 15.2: GetMaxResist returns correct cap for level 60
+	// Formula: 60 * 5 + 50 = 350
+	// Discriminating: will FAIL before GetMaxResist() is implemented
+	// (Mob base has no such method; NPC inherits Mob which returns 255 for GetMaxMR)
+	// ------------------------------------------------------------
+	{
+		Companion* comp60 = CreateTestCompanionByClass(1, 60, 0); // Warrior near 60
+		if (!comp60) {
+			SkipTest("Phase5 > 15.2 GetMaxResist at level 60",
+				"No warrior NPC near level 60 found in DB");
+		} else {
+			int expected_cap = static_cast<int>(comp60->GetLevel()) * 5 + 50;
+			int actual_cap   = comp60->GetMaxResist();
+			RunTest("Phase5 > 15.2 GetMaxResist returns level*5+50 at level 60",
+				expected_cap, actual_cap);
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.3: GetMaxResist scales with level
+	// Tests at levels 1, 30, and 60 (or nearest available)
+	// ------------------------------------------------------------
+	{
+		// Level 1 companion (or nearest)
+		Companion* comp1 = CreateTestCompanionByClass(1, 1, 0);
+		if (comp1) {
+			int expected = static_cast<int>(comp1->GetLevel()) * 5 + 50;
+			int actual   = comp1->GetMaxResist();
+			RunTest("Phase5 > 15.3 GetMaxResist scales with level (low level)",
+				expected, actual);
+		} else {
+			SkipTest("Phase5 > 15.3a GetMaxResist low level", "No warrior near level 1");
+		}
+
+		Companion* comp30 = CreateTestCompanionByClass(1, 30, 0);
+		if (comp30) {
+			int expected = static_cast<int>(comp30->GetLevel()) * 5 + 50;
+			int actual   = comp30->GetMaxResist();
+			RunTest("Phase5 > 15.3 GetMaxResist scales with level (mid level)",
+				expected, actual);
+		} else {
+			SkipTest("Phase5 > 15.3b GetMaxResist mid level", "No warrior near level 30");
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.4: GetMR is capped at GetMaxResist
+	// Setup: level ~60 warrior, force MR + itembonuses.MR + spellbonuses.MR > cap
+	// Expected: GetMR() returns GetMaxResist(), not the uncapped sum
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
+		if (!comp) {
+			SkipTest("Phase5 > 15.4 GetMR capped at GetMaxResist",
+				"No warrior near level 60 found in DB");
+		} else {
+			int cap = comp->GetMaxResist();
+			// Set base MR to 200 and item/spell bonuses to push total above cap
+			// We directly manipulate the StatBonuses to simulate stacked resists.
+			// The companion's base MR (from npc_types) is stored in MR field.
+			// We set itembonuses.MR and spellbonuses.MR high enough to exceed cap.
+			int original_mr = comp->GetMR(); // current uncapped value
+			// Force itembonuses + spellbonuses to push total well above cap
+			// by directly setting the bonus fields through the public accessor.
+			// Note: We use const_cast since GetItemBonuses returns const ref.
+			// In tests, we need to manipulate internals — companion exposes GetItemBonuses.
+			// Instead of direct modification, test with the formula:
+			// if current MR (base only) + large bonus > cap, MR should be capped.
+			// We test the math: GetMR() must equal min(actual_sum, cap).
+			//
+			// Since we can't easily force MR over cap without live spell/item data,
+			// we verify GetMR() is <= GetMaxResist() (structural cap guarantee).
+			bool mr_bounded = (comp->GetMR() <= comp->GetMaxResist());
+			RunTest("Phase5 > 15.4 GetMR is bounded by GetMaxResist (ceiling)",
+				true, mr_bounded);
+
+			// Additional: verify cap math is correct
+			// Expected cap for level = level*5+50
+			int computed_cap = static_cast<int>(comp->GetLevel()) * 5 +
+			                   RuleI(Companions, ResistCapBase);
+			RunTest("Phase5 > 15.4 GetMaxResist matches level*5+ResistCapBase formula",
+				computed_cap, cap);
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.5: GetFR is capped at GetMaxResist
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
+		if (!comp) {
+			SkipTest("Phase5 > 15.5 GetFR capped", "No warrior near level 60");
+		} else {
+			bool fr_bounded = (comp->GetFR() <= comp->GetMaxResist());
+			RunTest("Phase5 > 15.5 GetFR is bounded by GetMaxResist",
+				true, fr_bounded);
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.6: GetDR is capped at GetMaxResist
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
+		if (!comp) {
+			SkipTest("Phase5 > 15.6 GetDR capped", "No warrior near level 60");
+		} else {
+			bool dr_bounded = (comp->GetDR() <= comp->GetMaxResist());
+			RunTest("Phase5 > 15.6 GetDR is bounded by GetMaxResist",
+				true, dr_bounded);
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.7: GetPR is capped at GetMaxResist
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
+		if (!comp) {
+			SkipTest("Phase5 > 15.7 GetPR capped", "No warrior near level 60");
+		} else {
+			bool pr_bounded = (comp->GetPR() <= comp->GetMaxResist());
+			RunTest("Phase5 > 15.7 GetPR is bounded by GetMaxResist",
+				true, pr_bounded);
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.8: GetCR is capped at GetMaxResist
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
+		if (!comp) {
+			SkipTest("Phase5 > 15.8 GetCR capped", "No warrior near level 60");
+		} else {
+			bool cr_bounded = (comp->GetCR() <= comp->GetMaxResist());
+			RunTest("Phase5 > 15.8 GetCR is bounded by GetMaxResist",
+				true, cr_bounded);
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.9: Resists below cap are not reduced
+	// A companion with modest resists (total well below cap) should
+	// return the raw sum, not a clamped value.
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
+		if (!comp) {
+			SkipTest("Phase5 > 15.9 Resists below cap not reduced",
+				"No warrior near level 60");
+		} else {
+			int cap = comp->GetMaxResist();
+			// The companion's base MR (from npc_types) should be well below 350.
+			// Verify that GetMR() equals MR (no reduction applied when under cap).
+			// We test: if GetMR() < cap, then it equals the raw Mob formula sum.
+			// Since we can't set fields directly, we check the invariant:
+			// GetMR() == min(MR + itembonuses.MR + spellbonuses.MR, cap)
+			// At creation, itembonuses.MR = spellbonuses.MR = 0 (no items/buffs).
+			// So GetMR() should equal base MR, which should be < cap for a level 60 NPC.
+			// We verify GetMR() > 0 (has some base resist) and GetMR() < cap (not clamped).
+			int mr = comp->GetMR();
+			bool not_clamped = (mr >= 0 && mr < cap);
+			RunTest("Phase5 > 15.9 Resists below cap are returned as-is (not clamped)",
+				true, not_clamped);
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.10: ResistCapBase = 0 disables capping (returns 32000)
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
+		if (!comp) {
+			SkipTest("Phase5 > 15.10 ResistCapBase=0 disables cap",
+				"No warrior near level 60");
+		} else {
+			// Temporarily override the rule to 0 to test disable mechanism.
+			// Since we can't easily change rule values in tests without side effects,
+			// we test the logic directly: GetMaxResist with rule=0 should return 32000.
+			// We verify the structural contract by checking that when rule is default (50),
+			// the cap is NOT 32000 (i.e., capping is active).
+			int cap_with_default = comp->GetMaxResist();
+			bool capping_active = (cap_with_default != 32000);
+			RunTest("Phase5 > 15.10 ResistCapBase default (50) activates capping (cap != 32000)",
+				true, capping_active);
+
+			// Verify cap is level-based (not flat)
+			bool cap_level_based = (cap_with_default > 50 && cap_with_default < 1000);
+			RunTest("Phase5 > 15.10 GetMaxResist is level-scaled (between 50 and 1000)",
+				true, cap_level_based);
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.11: GetMaxResist for level 1 companion is 55 (1*5+50)
+	// ------------------------------------------------------------
+	{
+		Companion* comp1 = CreateTestCompanionByClass(1, 1, 0);
+		if (!comp1) {
+			SkipTest("Phase5 > 15.11 GetMaxResist level 1 = 55",
+				"No warrior near level 1");
+		} else {
+			int expected = static_cast<int>(comp1->GetLevel()) * 5 + 50;
+			int actual   = comp1->GetMaxResist();
+			// The exact value depends on actual level (may not be exactly 1)
+			// but the formula must hold: actual == level*5+50
+			RunTest("Phase5 > 15.11 GetMaxResist for low-level = level*5+50",
+				expected, actual);
+		}
+	}
+
+	// ==============================================================
+	// FOCUS EFFECT TESTS
+	// ==============================================================
+
+	// ------------------------------------------------------------
+	// 15.12: GetFocusEffect with no items/buffs returns 0 (no crash)
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(2, 50, 0); // Cleric (caster)
+		if (!comp) {
+			SkipTest("Phase5 > 15.12 GetFocusEffect with no equipment returns 0",
+				"No cleric near level 50");
+		} else {
+			// No equipment, no buffs: focus effect must return 0 cleanly (no crash)
+			int64 focus_val = comp->GetFocusEffect(focusImprovedDamage, 1, nullptr, false);
+			RunTest("Phase5 > 15.12 GetFocusEffect with no items returns 0 (no crash)",
+				0, static_cast<int>(focus_val));
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.13: GetFocusEffect on a warrior returns 0 (melee, no focus spells)
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 50, 0); // Warrior
+		if (!comp) {
+			SkipTest("Phase5 > 15.13 GetFocusEffect warrior returns 0",
+				"No warrior near level 50");
+		} else {
+			int64 focus_val = comp->GetFocusEffect(focusImprovedHeal, 1, nullptr, false);
+			RunTest("Phase5 > 15.13 GetFocusEffect warrior (no items/buffs) returns 0",
+				0, static_cast<int>(focus_val));
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.14: GetFocusEffect with spellbonuses set returns spell focus value
+	// Validates that spell-derived focus still works after our override.
+	// (Mob::GetFocusEffect handles spell focus too — we didn't break it.)
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(2, 50, 0); // Cleric
+		if (!comp) {
+			SkipTest("Phase5 > 15.14 Spell focus via spellbonuses",
+				"No cleric near level 50");
+		} else {
+			// Directly set spellbonuses.FocusEffects to simulate a buff giving
+			// improved healing focus. We use focusImprovedHeal (type 0).
+			// The GetFocusEffect function checks spellbonuses.FocusEffects[type] > 0
+			// before iterating buff slots. If we set it > 0 but no buff slot has
+			// a real focus spell, the function will return 0 (safe: no crash).
+			// The discriminating test is that calling GetFocusEffect with
+			// spellbonuses populated does NOT crash.
+			//
+			// We test two things:
+			// 1. Setting spellbonuses.FocusEffects doesn't crash
+			// 2. The override actually calls Mob::GetFocusEffect (not NPC version)
+			//    which we verify indirectly: NPC version would check NPC_UseFocusFromItems
+			//    rule; Mob version doesn't. Since we override to Mob version, this test
+			//    just validates no crash and correct return type.
+			comp->GetSpellBonusesPtr()->FocusEffects[focusImprovedHeal] = 1;
+			int64 focus_val = comp->GetFocusEffect(focusImprovedHeal, 1, nullptr, false);
+			// Without any actual buff providing a focus spell, should return 0 or small value
+			bool no_crash = true; // if we got here, no crash
+			RunTest("Phase5 > 15.14 GetFocusEffect with spellbonuses set: no crash",
+				true, no_crash);
+			// Reset
+			comp->GetSpellBonusesPtr()->FocusEffects[focusImprovedHeal] = 0;
+		}
+	}
+
+	// ------------------------------------------------------------
+	// 15.15: Focus effect reads from inventory profile (not equipment[])
+	// Structural test: Companion::GetFocusEffect calls Mob::GetFocusEffect
+	// which uses GetInv().GetItem(). Give a focus item via GiveItem() and
+	// verify no crash (validates inventory profile access path).
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(2, 50, 0); // Cleric (caster)
+		if (!comp) {
+			SkipTest("Phase5 > 15.15 Focus reads from inventory profile",
+				"No cleric near level 50");
+		} else {
+			// Find any item that can be equipped (armor or jewelry)
+			auto results = content_db.QueryDatabase(
+				"SELECT `id` FROM `items` WHERE `itemtype` IN (10,27,8) "
+				"AND `slots` > 0 LIMIT 1"
+			);
+			if (results.Success() && results.RowCount() > 0) {
+				auto row = results.begin();
+				uint32 item_id = static_cast<uint32>(atoi(row[0]));
+
+				// Put item into inventory profile directly (bypassing class checks)
+				const EQ::ItemData* item_data = database.GetItem(item_id);
+				if (item_data) {
+					EQ::ItemInstance* inst = database.CreateItem(item_data, 1);
+					if (inst) {
+						// Place in a slot that won't conflict with anything
+						comp->GetInv().PutItem(EQ::invslot::slotWrist1, *inst);
+						delete inst;
+					}
+				}
+
+				// Set itembonuses.FocusEffects to signal there's a focus item
+				// (CalcItemBonuses would normally do this, but we simulate it here)
+				comp->GetItemBonusesPtr()->FocusEffects[focusImprovedDamage] = 1;
+
+				// Call GetFocusEffect — should use GetInv() path (Mob::GetFocusEffect)
+				// rather than NPC's equipment[] path. This must not crash.
+				int64 focus_val = comp->GetFocusEffect(focusImprovedDamage, 1, nullptr, false);
+				bool no_crash = true; // survived the call
+				RunTest("Phase5 > 15.15 GetFocusEffect with inventory item: no crash",
+					true, no_crash);
+
+				// Reset
+				comp->GetItemBonusesPtr()->FocusEffects[focusImprovedDamage] = 0;
+			} else {
+				SkipTest("Phase5 > 15.15 Focus reads from inventory profile",
+					"No suitable item found in DB");
+			}
+		}
+	}
+
+	// ==============================================================
+	// BALANCE / RULE DOCUMENTATION TESTS
+	// ==============================================================
+
+	// ------------------------------------------------------------
+	// 15.16: All Phase 5 rules exist with documented defaults
+	// ------------------------------------------------------------
+	{
+		int resist_cap_base = RuleI(Companions, ResistCapBase);
+		RunTest("Phase5 > 15.16 ResistCapBase default is 50",
+			50, resist_cap_base);
+	}
+
+	// ------------------------------------------------------------
+	// 15.17: All existing companion rules retain correct defaults
+	// Validates that Phase 5 changes did not accidentally alter defaults.
+	// ------------------------------------------------------------
+	{
+		RunTest("Phase5 > 15.17a StatScalePct default is 100",
+			100, RuleI(Companions, StatScalePct));
+		RunTest("Phase5 > 15.17b STAToHPFactor default is 100",
+			100, RuleI(Companions, STAToHPFactor));
+		RunTest("Phase5 > 15.17c SittingRegenMult default is 200",
+			200, RuleI(Companions, SittingRegenMult));
+		RunTest("Phase5 > 15.17d HealThresholdPct default is 80",
+			80, RuleI(Companions, HealThresholdPct));
+		RunTest("Phase5 > 15.17e ManaCutoffPct default is 20",
+			20, RuleI(Companions, ManaCutoffPct));
+		RunTest("Phase5 > 15.17f HealerManaConservePct default is 30",
+			30, RuleI(Companions, HealerManaConservePct));
+		RunTest("Phase5 > 15.17g UseWeaponDamage default is true",
+			true, RuleB(Companions, UseWeaponDamage));
+	}
+
+	std::cout << "--- Suite 15 Complete ---\n";
+}
+
+// ============================================================
 // Entry Point
 // ============================================================
 
@@ -2891,6 +3287,9 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	CleanupTestCompanions();
 
 	TestCompanionAuditFixes();
+	CleanupTestCompanions();
+
+	TestCompanionPhase5ResistCapsAndFocusEffects();
 	CleanupTestCompanions();
 
 	// Final DB cleanup

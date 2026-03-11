@@ -845,6 +845,55 @@ int64 Companion::CalcMaxHP()
 }
 
 // ============================================================
+// Resist Caps — Phase 5
+// ============================================================
+
+// GetMaxResist: returns the companion's resist cap.
+//
+// Formula: level * 5 + ResistCapBase (default 50).
+// At level 60 with default ResistCapBase=50: cap = 350.
+// At level 65 with default: cap = 375.
+//
+// This is intentionally lower than the Client cap of 500, placing
+// companion resist ceiling at ~70% of player cap — matching the
+// 70-85% power target from the PRD.
+//
+// Setting ResistCapBase to 0 disables resist capping entirely
+// (returns 32000, a value no companion resist can realistically reach).
+int32 Companion::GetMaxResist() const
+{
+	int rule_base = RuleI(Companions, ResistCapBase);
+	if (rule_base <= 0) {
+		return 32000;
+	}
+	return static_cast<int32>(GetLevel()) * 5 + rule_base;
+}
+
+// ============================================================
+// Focus Effects — Phase 5
+// ============================================================
+
+// GetFocusEffect: delegates to Mob::GetFocusEffect (the base class)
+// instead of NPC::GetFocusEffect.
+//
+// Why: NPC::GetFocusEffect has two problems for companions:
+//   1. It gates item focus behind RuleB(Spells, NPC_UseFocusFromItems),
+//      which defaults to false — completely disabling item focus for all NPCs.
+//   2. It reads items from the NPC equipment[] array (raw IDs from npc_types)
+//      rather than the inventory profile. Companions store their equipped
+//      items via GiveItem() -> GetInv().PutItem() in the inventory profile,
+//      not in equipment[]. Using equipment[] returns stale/wrong items.
+//
+// Mob::GetFocusEffect uses GetInv().GetItem() (correct for companions)
+// and has no NPC_UseFocusFromItems rule gate. Delegating here enables
+// both item-derived and spell-derived focus effects with a single call.
+int64 Companion::GetFocusEffect(focusType type, uint16 spell_id,
+                                Mob *caster, bool from_buff_tic)
+{
+	return Mob::GetFocusEffect(type, spell_id, caster, from_buff_tic);
+}
+
+// ============================================================
 // Triple Attack — Phase 2
 // ============================================================
 
