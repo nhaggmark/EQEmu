@@ -100,9 +100,12 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	memset(m_equipment, 0, sizeof(m_equipment));
 
 	// Initialize inventory profile so CalcItemBonuses() can read equipped items via GetInv().GetItem().
-	// Companions are non-PC entities; use MobVersion::NPC (same slot layout as NPCs).
-	// Bot uses MobVersion::Bot — NPC is appropriate here since companions are NPC-derived.
-	GetInv().SetInventoryVersion(EQ::versions::MobVersion::NPC);
+	// MobVersion::Bot is required — not MobVersion::NPC — because the NPC version has a zero
+	// PossessionsBitmask which causes InventoryProfile::PutItem() to return SLOT_INVALID for all
+	// equipment slots. MobVersion::Bot has EntityLimits::Bot::invslot::POSSESSIONS_BITMASK which
+	// includes all equipment slots, allowing GiveItem() and LoadEquipment() to populate the profile
+	// so CalcItemBonuses() applies item stats correctly.
+	GetInv().SetInventoryVersion(EQ::versions::MobVersion::Bot);
 	GetInv().SetGMInventory(false);
 
 	// Disable retention check for companion-type (only mercs need it)

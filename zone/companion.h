@@ -251,6 +251,14 @@ public:
 	uint32 GetEquipment(uint8 slot) const;
 	void SetEquipment(uint8 slot, uint32 item_id);
 
+	// Expose inventory profile as public so tests and external code can read equipped item data.
+	// Mob::GetInv() is protected; this public override makes it accessible without modifying mob.h.
+	virtual EQ::InventoryProfile& GetInv() override { return Mob::GetInv(); }
+
+	// Expose item bonuses as public for tests and external code.
+	// Mob::itembonuses is protected; this accessor avoids modifying mob.h.
+	const StatBonuses& GetItemBonuses() const { return itembonuses; }
+
 	// Equipment listing / retrieval (called from Lua companion.lua)
 	void ShowEquipment(Client* client);
 	bool GiveSlot(Client* client, const std::string& slot_name);
