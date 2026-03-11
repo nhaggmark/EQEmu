@@ -197,12 +197,17 @@ public:
 	// Shared spell selection helpers (companion_ai.cpp)
 	bool AI_HealGroupMember(bool engaged);
 	bool AI_BuffGroupMember();
+	bool AI_WizardBuff();           // Issue #8: wizard-specific buff — DS only to melee targets
 	bool AI_CureGroupMember();
 	bool AI_NukeTarget(uint32 nuke_types);
 	bool AI_SlowDebuff(Mob* target);
 	bool AI_MezTarget();
 	bool AI_SummonPet();
 	bool AI_InCombatBuff();
+
+	// Issue #6: Find the best Cannibalize spell (SE_CurrentMana self-spell)
+	// Returns 0 if no suitable spell is found in m_companion_spells.
+	uint16 FindCannibalizeSpell();
 
 	virtual void FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho) override;
 	uint32 GetEquipmentMaterial(uint8 material_slot) const override;
@@ -398,8 +403,9 @@ protected:
 	Timer m_evade_timer;
 	Timer m_retention_check_timer;
 	Timer m_death_despawn_timer;
-	Timer m_ping_timer;          // keep-alive: prevents client culling idle entities
-	Timer m_mana_report_timer;   // mana % report via group say while sitting (15s interval)
+	Timer m_ping_timer;              // keep-alive: prevents client culling idle entities
+	Timer m_mana_report_timer;       // mana % report via group say while sitting (15s interval)
+	Timer m_sitting_regen_timer;     // 6-second cadence for sitting HP bonus (Issue #1 fix)
 
 	// Equipment: array of item IDs indexed by EQ::invslot::EQUIPMENT slots
 	uint32 m_equipment[EQ::invslot::EQUIPMENT_COUNT];

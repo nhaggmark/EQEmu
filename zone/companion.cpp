@@ -53,7 +53,8 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	  m_death_despawn_timer(RuleI(Companions, DeathDespawnS) * 1000),
 	  m_replacement_spawn_timer(RuleI(Companions, ReplacementSpawnDelayS) * 1000),
 	  m_ping_timer(5000),
-	  m_mana_report_timer(15000)
+	  m_mana_report_timer(15000),
+	  m_sitting_regen_timer(6000)
 {
 	// Identity
 	m_companion_id          = 0;
@@ -1553,7 +1554,7 @@ bool Companion::Process()
 		}
 	}
 
-	// Sitting HP regen bonus (Phase 3):
+	// Sitting HP regen bonus (Phase 3, corrected by audit Issue #1):
 	// NPC::Process() regen code adds only 3 HP/tick for sitting (npc_sitting_regen_bonus).
 	// For companions, we want 2-3x the OOC regen rate when sitting and out of combat.
 	// We apply an additive sitting bonus BEFORE NPC::Process() runs, so the total
@@ -1564,8 +1565,14 @@ bool Companion::Process()
 	// At SittingRegenMult=200 (2x): sitting bonus equals the base OOC regen,
 	// so total sitting regen = 2x the standing OOC regen rate.
 	//
-	// Conditions: must be sitting, not engaged, and have HP to recover.
-	if (IsSitting() && !IsEngaged() && GetHP() < GetMaxHP()) {
+	// CRITICAL: This must be gated behind m_sitting_regen_timer (6-second cadence)
+	// to match the tic-based regen in NPC::Process(). Without this gate, the bonus
+	// fires on every Process() tick (~6-40 times per 6-second tic), causing 24-40x
+	// overregen that refills HP almost instantly.
+	//
+	// Conditions: must be sitting, not engaged, have HP to recover, and timer fired.
+	if (IsSitting() && !IsEngaged() && GetHP() < GetMaxHP()
+	    && m_sitting_regen_timer.Check()) {
 		int mult = RuleI(Companions, SittingRegenMult);
 		if (mult > 100) {
 			// Compute the OOC regen amount NPC::Process would apply

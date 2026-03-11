@@ -42,6 +42,7 @@
 #include "companion.h"
 
 #include "common/rulesys.h"
+#include "common/spdat.h"
 #include "zone/client.h"
 #include "zone/entity.h"
 #include "zone/groups.h"
@@ -128,7 +129,7 @@ static std::vector<CompanionSpell> GetSpellsForType(
 static uint16 SelectHealSpell(
 	const std::vector<CompanionSpell>& spell_list,
 	uint8 companion_stance,
-	int8 target_hp_pct,
+	int target_hp_pct,   // widened from int8 (Issue #4 fix — no truncation)
 	uint32 now_ms)
 {
 	auto candidates = GetSpellsForType(spell_list, SpellType_Heal, companion_stance);
@@ -159,7 +160,7 @@ static uint16 SelectHealSpell(
 static uint16 SelectEfficientHealSpell(
 	const std::vector<CompanionSpell>& spell_list,
 	uint8 companion_stance,
-	int8 target_hp_pct,
+	int target_hp_pct,   // widened from int8 (Issue #4 fix — no truncation)
 	uint32 now_ms)
 {
 	auto candidates = GetSpellsForType(spell_list, SpellType_Heal, companion_stance);
@@ -190,6 +191,65 @@ static uint16 SelectEfficientHealSpell(
 	}
 
 	return best_spell;
+}
+
+// ============================================================
+// Internal helper: select best HoT (heal-over-time) spell for a
+// target.  Identifies HoT spells by their buff_duration > 0 on the
+// SPDat_Spell_Struct (they leave a ticking buff).  Used by the
+// druid to prefer HoT when target is above 50% HP (Issue #5 fix).
+// Returns 0 if no HoT heal spell is available/ready.
+// ============================================================
+static uint16 SelectHoTSpell(
+	const std::vector<CompanionSpell>& spell_list,
+	uint8 companion_stance,
+	int target_hp_pct,
+	uint32 now_ms)
+{
+	auto candidates = GetSpellsForType(spell_list, SpellType_Heal, companion_stance);
+
+	for (const auto& cs : candidates) {
+		if (cs.time_cancast > now_ms) {
+			continue;
+		}
+		// Check HP thresholds
+		if (cs.min_hp_pct > 0 && target_hp_pct > cs.min_hp_pct) {
+			continue;
+		}
+		if (cs.max_hp_pct > 0 && cs.max_hp_pct < 100 && target_hp_pct < cs.max_hp_pct) {
+			continue;
+		}
+		// Identify as HoT: spell has buff_duration > 0 (ticking buff, not instant heal)
+		if (!IsValidSpell(cs.spellid)) {
+			continue;
+		}
+		if (spells[cs.spellid].buff_duration > 0) {
+			return cs.spellid;
+		}
+	}
+
+	return 0;
+}
+
+// ============================================================
+// Internal helper: returns true if spell_id has a SE_DamageShield
+// (effect ID 59) in any of its effect slots.  Used by AI_WizardBuff
+// to identify damage shield spells that should only target melee
+// companions (not healers/casters who rarely get hit in melee).
+// See Issue #8.
+// ============================================================
+static bool IsDamageShieldSpell(uint16 spell_id)
+{
+	if (!IsValidSpell(spell_id)) {
+		return false;
+	}
+	const SPDat_Spell_Struct& sp = spells[spell_id];
+	for (int i = 0; i < EFFECT_COUNT; ++i) {
+		if (sp.effect_id[i] == SpellEffect::DamageShield) {
+			return true;
+		}
+	}
+	return false;
 }
 
 // ============================================================
@@ -399,7 +459,8 @@ bool Companion::AI_HealGroupMember(bool engaged)
 	Group* g = GetGroup();
 	if (!g) {
 		// Solo: only heal self
-		int8 self_hp = static_cast<int8>(GetHPRatio());
+		// Issue #4 fix: use int (not int8) to avoid overflow when HP ratio > 127
+		int self_hp = static_cast<int>(GetHPRatio());
 		if (self_hp < 95) {
 			uint16 heal_spell = SelectHealSpell(
 				m_companion_spells, m_current_stance, self_hp,
@@ -414,8 +475,14 @@ bool Companion::AI_HealGroupMember(bool engaged)
 	// Find most injured group member (owner prioritized, then tanks).
 	// When engaged, use the rule-configured threshold (default 80%).
 	// When idle/OOC, always heal below 99% (keep group topped off).
+	//
+	// Issue #4 fix: use int (not int8) for HP ratio comparisons.
+	// int8 overflows at 128+, causing silent negative values:
+	//   static_cast<int8>(200) = -56  → healer never heals anyone (no one is at -56% HP)
+	//   static_cast<int8>(130) = -126 → same pathological result
+	// Using int prevents this. Valid HP ratio (0-100) and rule values (0-200) fit safely.
 	Mob* best_target = nullptr;
-	int8 lowest_hp   = engaged ? static_cast<int8>(RuleI(Companions, HealThresholdPct)) : 99;
+	int  lowest_hp   = engaged ? RuleI(Companions, HealThresholdPct) : 99;
 
 	Client* owner = GetCompanionOwner();
 
@@ -424,7 +491,7 @@ bool Companion::AI_HealGroupMember(bool engaged)
 			continue;
 		}
 
-		int8 hpr = static_cast<int8>(g->members[i]->GetHPRatio());
+		int hpr = static_cast<int>(g->members[i]->GetHPRatio());
 
 		if (hpr >= lowest_hp) {
 			continue;
@@ -441,7 +508,7 @@ bool Companion::AI_HealGroupMember(bool engaged)
 	}
 
 	// Also consider healing self
-	int8 self_hp = static_cast<int8>(GetHPRatio());
+	int self_hp = static_cast<int>(GetHPRatio());
 	if (self_hp < lowest_hp) {
 		best_target = this;
 		lowest_hp   = self_hp;
@@ -524,6 +591,120 @@ bool Companion::AI_BuffGroupMember()
 		}
 
 		const auto& sp = spells[cs.spellid];
+
+		for (Mob* tgt : targets) {
+			if (!tgt || tgt->GetHP() <= 0) {
+				continue;
+			}
+
+			// Self-only spells
+			if (sp.target_type == ST_Self && tgt != this) {
+				continue;
+			}
+
+			// Skip if already buffed
+			if (tgt->IsImmuneToSpell(cs.spellid, this)) {
+				continue;
+			}
+			if (tgt->CanBuffStack(cs.spellid, comp_level, true) < 0) {
+				continue;
+			}
+
+			uint32 dont_buff_before = tgt->DontBuffMeBefore();
+			bool cast_ok = AIDoSpellCast(cs.spellid, tgt, spells[cs.spellid].mana, &dont_buff_before);
+			if (cast_ok) {
+				tgt->SetDontBuffMeBefore(dont_buff_before);
+				SetSpellTimeCanCast(cs.spellid, spells[cs.spellid].recast_time);
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+// ============================================================
+// AI_WizardBuff — wizard-specific idle buff logic (Issue #8 fix)
+//
+// The wizard has damage shield (DS) spells that are only useful on
+// melee companions (tanks, DPS) that get hit in melee. Casting DS
+// on casters/healers who stand at range wastes mana.
+//
+// This method works like AI_BuffGroupMember() but with DS spell
+// filtering: DS spells are only cast on melee-role group members.
+// Non-DS buffs (fire resist, other utility) are cast on everyone.
+//
+// Clients (the player) are always eligible for DS since their
+// positioning is player-controlled.
+// ============================================================
+bool Companion::AI_WizardBuff()
+{
+	// Don't buff if mana is below 30% (conserve for nukes)
+	if (GetMaxMana() > 0 && GetManaRatio() < 30.0f) {
+		return false;
+	}
+
+	uint32 now_ms   = Timer::GetCurrentTime();
+	uint8  comp_level = GetLevel();
+
+	auto buff_spells = GetSpellsForType(m_companion_spells, SpellType_Buff | SpellType_PreCombatBuff, m_current_stance);
+
+	if (buff_spells.empty()) {
+		return false;
+	}
+
+	Group* g = GetGroup();
+
+	// Build full target list
+	std::vector<Mob*> all_targets;
+	all_targets.push_back(this);
+	if (g) {
+		for (int i = 0; i < MAX_GROUP_MEMBERS; i++) {
+			if (g->members[i] && g->members[i] != this) {
+				all_targets.push_back(g->members[i]);
+				if (g->members[i]->HasPet()) {
+					all_targets.push_back(g->members[i]->GetPet());
+				}
+			}
+		}
+	}
+
+	// Build melee-only target list for DS spells:
+	// Companions with melee roles + Clients (whose positioning is player-controlled).
+	std::vector<Mob*> melee_targets;
+	for (Mob* tgt : all_targets) {
+		if (!tgt) {
+			continue;
+		}
+		if (tgt->IsClient()) {
+			// Always include the player (they control their own positioning)
+			melee_targets.push_back(tgt);
+		} else if (tgt->IsCompanion()) {
+			Companion* ctgt = static_cast<Companion*>(tgt);
+			CompanionCombatRole role = ctgt->GetCombatRole();
+			if (role == COMBAT_ROLE_MELEE_TANK ||
+			    role == COMBAT_ROLE_MELEE_DPS   ||
+			    role == COMBAT_ROLE_ROGUE) {
+				melee_targets.push_back(tgt);
+			}
+		}
+		// Pets are melee — include them
+		else if (tgt->IsPet()) {
+			melee_targets.push_back(tgt);
+		}
+	}
+
+	for (const auto& cs : buff_spells) {
+		if (cs.time_cancast > now_ms) {
+			continue;
+		}
+
+		const auto& sp = spells[cs.spellid];
+
+		// Choose which target list to use based on spell type
+		const std::vector<Mob*>& targets = IsDamageShieldSpell(cs.spellid)
+		                                   ? melee_targets
+		                                   : all_targets;
 
 		for (Mob* tgt : targets) {
 			if (!tgt || tgt->GetHP() <= 0) {
@@ -965,8 +1146,59 @@ bool Companion::AI_Druid(uint32 iSpellTypes, bool is_defensive)
 
 	if (engaged) {
 		if (iSpellTypes & SpellType_Heal) {
-			if (AI_HealGroupMember(true)) {
-				return true;
+			// Druid HoT preference (Issue #5 fix):
+			// When the most injured group member is above 50% HP, prefer HoT for
+			// efficiency. Below 50% HP, switch to direct heals for immediate effect.
+			// This mirrors druid playstyle: HoTs for maintenance, direct heals for urgency.
+			Group*  g           = GetGroup();
+			Mob*    heal_target = nullptr;
+			int     target_hp   = 100;
+
+			if (g) {
+				// Find most injured group member
+				for (int i = 0; i < MAX_GROUP_MEMBERS; i++) {
+					if (!g->members[i] || g->members[i]->GetHP() <= 0) {
+						continue;
+					}
+					int threshold = RuleI(Companions, HealThresholdPct);
+					int hpr = static_cast<int>(g->members[i]->GetHPRatio());
+					if (hpr < threshold && (!heal_target || hpr < target_hp)) {
+						heal_target = g->members[i];
+						target_hp   = hpr;
+					}
+				}
+			}
+			// Also check self
+			{
+				int threshold = RuleI(Companions, HealThresholdPct);
+				int self_hpr  = static_cast<int>(GetHPRatio());
+				if (self_hpr < threshold && (!heal_target || self_hpr < target_hp)) {
+					heal_target = this;
+					target_hp   = self_hpr;
+				}
+			}
+
+			if (heal_target) {
+				uint32  now_ms    = Timer::GetCurrentTime();
+				uint16  heal_spell = 0;
+
+				if (target_hp > 50) {
+					// Above 50% HP: prefer HoT for mana efficiency
+					heal_spell = SelectHoTSpell(
+						m_companion_spells, m_current_stance, target_hp, now_ms);
+				}
+				if (!heal_spell) {
+					// Below 50% HP or no HoT available: use direct heal
+					heal_spell = SelectHealSpell(
+						m_companion_spells, m_current_stance, target_hp, now_ms);
+				}
+				if (heal_spell) {
+					bool cast_ok = AIDoSpellCast(heal_spell, heal_target, spells[heal_spell].mana);
+					if (cast_ok) {
+						SetSpellTimeCanCast(heal_spell, spells[heal_spell].recast_time);
+						return true;
+					}
+				}
 			}
 		}
 		if (iSpellTypes & SpellType_Cure) {
@@ -1067,6 +1299,21 @@ bool Companion::AI_Shaman(uint32 iSpellTypes, bool is_defensive)
 				return true;
 			}
 		}
+		// Cannibalize (Issue #6 fix): convert HP to mana when mana is low and HP healthy.
+		// Conditions: mana < 40%, HP > 80%, and a Cannibalize spell is available.
+		// This is the shaman's signature mana recovery ability in Classic-Luclin.
+		// Note: Cannibalize spells must be present in companion_spell_sets for shaman
+		// (data-expert task). FindCannibalizeSpell() identifies them by spell effects.
+		if (GetMaxMana() > 0 && GetManaRatio() < 40.0f && GetHPRatio() > 80.0f) {
+			uint16 canni_spell = FindCannibalizeSpell();
+			if (canni_spell) {
+				bool cast_ok = AIDoSpellCast(canni_spell, this, spells[canni_spell].mana);
+				if (cast_ok) {
+					SetSpellTimeCanCast(canni_spell, spells[canni_spell].recast_time);
+					return true;
+				}
+			}
+		}
 	} else {
 		if (iSpellTypes & SpellType_Cure) {
 			if (AI_CureGroupMember()) {
@@ -1078,12 +1325,80 @@ bool Companion::AI_Shaman(uint32 iSpellTypes, bool is_defensive)
 				return true;
 			}
 		}
+		// Cannibalize when idle and mana is low — refuel faster while sitting
+		if (GetMaxMana() > 0 && GetManaRatio() < 40.0f && GetHPRatio() > 80.0f) {
+			uint16 canni_spell = FindCannibalizeSpell();
+			if (canni_spell) {
+				bool cast_ok = AIDoSpellCast(canni_spell, this, spells[canni_spell].mana);
+				if (cast_ok) {
+					SetSpellTimeCanCast(canni_spell, spells[canni_spell].recast_time);
+					return true;
+				}
+			}
+		}
 		if (iSpellTypes & SpellType_Buff) {
 			return AI_BuffGroupMember();
 		}
 	}
 
 	return false;
+}
+
+// ============================================================
+// FindCannibalizeSpell — identify Cannibalize spells by effect data
+//
+// Scans m_companion_spells for self-only spells with SE_CurrentMana
+// (effect 15) and a positive base value (mana gain). Returns the
+// highest-level (last slot) match for maximum mana conversion.
+//
+// This identifies Cannibalize I-IV without requiring a special spell
+// type tag in companion_spell_sets — the spell effects tell the story.
+// ============================================================
+uint16 Companion::FindCannibalizeSpell()
+{
+	uint16 best_spell = 0;
+	int    best_slot  = -1;
+	uint32 now_ms     = Timer::GetCurrentTime();
+
+	for (const auto& cs : m_companion_spells) {
+		if (!IsValidSpell(cs.spellid)) {
+			continue;
+		}
+		if (cs.time_cancast > now_ms) {
+			continue; // on recast cooldown
+		}
+		if (!StanceMatch(cs.stance, m_current_stance)) {
+			continue;
+		}
+
+		const SPDat_Spell_Struct& sp = spells[cs.spellid];
+
+		// Must be self-only (Cannibalize only affects the caster)
+		if (sp.target_type != ST_Self) {
+			continue;
+		}
+
+		// Look for SE_CurrentMana (effect 15) with positive base value (mana gain)
+		bool has_mana_gain = false;
+		for (int i = 0; i < EFFECT_COUNT; ++i) {
+			if (sp.effect_id[i] == SpellEffect::CurrentMana && sp.base_value[i] > 0) {
+				has_mana_gain = true;
+				break;
+			}
+		}
+
+		if (!has_mana_gain) {
+			continue;
+		}
+
+		// Pick the highest-slot (best level) Cannibalize available
+		if (best_slot < cs.slot) {
+			best_spell = cs.spellid;
+			best_slot  = cs.slot;
+		}
+	}
+
+	return best_spell;
 }
 
 // -------------------------------------------------------
@@ -1173,8 +1488,9 @@ bool Companion::AI_Beastlord(uint32 iSpellTypes, bool is_defensive)
 
 	bool engaged = IsEngaged();
 
-	// Pet is highest priority when not engaged (maintain pet)
-	if (!engaged && (iSpellTypes & SpellType_Pet)) {
+	// Pet is highest priority when not engaged (maintain pet).
+	// Guard with 25% mana threshold (Issue #7 fix) — consistent with Necromancer/Magician.
+	if (!engaged && (iSpellTypes & SpellType_Pet) && GetManaRatio() > 25.0f) {
 		if (AI_SummonPet()) {
 			return true;
 		}
@@ -1246,8 +1562,10 @@ bool Companion::AI_Wizard(uint32 iSpellTypes, bool is_defensive)
 			return AI_NukeTarget(SpellType_Nuke);
 		}
 	} else {
+		// Idle: use AI_WizardBuff instead of AI_BuffGroupMember.
+		// Wizard DS spells should only target melee companions (Issue #8 fix).
 		if (iSpellTypes & SpellType_Buff) {
-			return AI_BuffGroupMember();
+			return AI_WizardBuff();
 		}
 	}
 
@@ -1267,16 +1585,20 @@ bool Companion::AI_Magician(uint32 iSpellTypes, bool is_defensive)
 
 	bool engaged = IsEngaged();
 
-	// Always maintain pet (highest priority for Magi)
-	if (iSpellTypes & SpellType_Pet) {
+	// Maintain pet — guard with 25% mana threshold (Issue #7 fix).
+	// Pet summon spells are expensive (200-600 mana); don't attempt at critically
+	// low mana so that mana is preserved for nukes/lifetaps instead.
+	if ((iSpellTypes & SpellType_Pet) && GetManaRatio() > 25.0f) {
 		if (AI_SummonPet()) {
 			return true;
 		}
 	}
 
 	if (engaged) {
-		// Nuke when mana available
-		if ((iSpellTypes & SpellType_Nuke) && GetManaRatio() > 20.0f) {
+		// Nuke when mana available — use ManaCutoffPct rule (Issue #2 fix).
+		// Previously hardcoded to 20.0f; now respects server operator settings.
+		if ((iSpellTypes & SpellType_Nuke) &&
+		    GetManaRatio() > static_cast<float>(RuleI(Companions, ManaCutoffPct))) {
 			return AI_NukeTarget(SpellType_Nuke);
 		}
 	} else {
@@ -1301,8 +1623,9 @@ bool Companion::AI_Necromancer(uint32 iSpellTypes, bool is_defensive)
 
 	bool engaged = IsEngaged();
 
-	// Maintain pet
-	if (iSpellTypes & SpellType_Pet) {
+	// Maintain pet — guard with 25% mana threshold (Issue #7 fix).
+	// Pet summon spells are expensive; save mana for DoTs and lifetap when low.
+	if ((iSpellTypes & SpellType_Pet) && GetManaRatio() > 25.0f) {
 		if (AI_SummonPet()) {
 			return true;
 		}
@@ -1372,8 +1695,13 @@ bool Companion::AI_Enchanter(uint32 iSpellTypes, bool is_defensive)
 				return true;
 			}
 		}
-		// Nuke when aggressive
-		if ((iSpellTypes & SpellType_Nuke) && m_current_stance == COMPANION_STANCE_AGGRESSIVE) {
+		// Nuke when aggressive — reserve extra mana for emergency mez (Issue #3 fix).
+		// Enchanters are CC utility, not DPS. Reserve mana above ManaCutoffPct+10
+		// (default 30%) so mez remains available even when nuking aggressively.
+		// This prevents the enchanter from nuking to 10% OOM bail, leaving no mana
+		// for a critical mez when adds appear.
+		if ((iSpellTypes & SpellType_Nuke) && m_current_stance == COMPANION_STANCE_AGGRESSIVE &&
+		    GetManaRatio() > static_cast<float>(RuleI(Companions, ManaCutoffPct) + 10)) {
 			return AI_NukeTarget(SpellType_Nuke);
 		}
 	} else {
