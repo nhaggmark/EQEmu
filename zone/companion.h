@@ -19,6 +19,7 @@
 #pragma once
 
 #include "zone/npc.h"
+#include <algorithm>
 #include <string>
 
 class Client;
@@ -113,6 +114,88 @@ public:
 	virtual bool IsOfClientBotMerc() const override { return true; }
 
 	// -------------------------------------------------------
+	// Combat overrides — weapon-damage path (Phase 1)
+	// -------------------------------------------------------
+	virtual void SetAttackTimer() override;
+
+	// -------------------------------------------------------
+	// Stat overrides — survivability path (Phase 3)
+	// -------------------------------------------------------
+	// CalcMaxHP adds STA-to-HP conversion on top of the NPC base calculation.
+	// Only bonus STA from items and spells contributes — base NPC STA is already
+	// reflected in npc_types.max_hp and must not be double-counted.
+	// The conversion factor is scaled by level, class archetype, and the
+	// Companions::STAToHPFactor rule.
+	virtual int64 CalcMaxHP() override;
+
+	// CalcMaxMana preserves the level-scaled max_mana set by ScaleStatsToLevel().
+	// Without this override, NPC::CalcMaxMana() resets max_mana to npc_mana
+	// (the original recruited NPC's value), discarding the level-scaled result.
+	// This override reconstructs the level-scaled base from m_base_mana and
+	// adds item/spell mana bonuses on top. Non-caster classes return 0.
+	// (BUG-017 fix)
+	virtual int64 CalcMaxMana() override;
+
+	// -------------------------------------------------------
+	// Resist cap overrides — Phase 5
+	// -------------------------------------------------------
+	// Companions use Client-style resist caps to prevent immunity stacking.
+	// Base cap formula: level * 5 + ResistCapBase (default 50).
+	// GetMaxResist() returns the cap; Get{X}R() enforce it.
+	// Setting ResistCapBase to 0 disables capping (returns 32000).
+	int32 GetMaxResist() const;
+	inline int32 GetMR() const override {
+		return std::min(MR + itembonuses.MR + spellbonuses.MR, GetMaxResist());
+	}
+	inline int32 GetFR() const override {
+		return std::min(FR + itembonuses.FR + spellbonuses.FR, GetMaxResist());
+	}
+	inline int32 GetDR() const override {
+		return std::min(DR + itembonuses.DR + spellbonuses.DR, GetMaxResist());
+	}
+	inline int32 GetPR() const override {
+		return std::min(PR + itembonuses.PR + spellbonuses.PR, GetMaxResist());
+	}
+	inline int32 GetCR() const override {
+		return std::min(CR + itembonuses.CR + spellbonuses.CR, GetMaxResist());
+	}
+
+	// -------------------------------------------------------
+	// Focus effect override — Phase 5
+	// -------------------------------------------------------
+	// Companions use the Mob base class GetFocusEffect() instead of the
+	// NPC override. The NPC override (a) gates item focus behind
+	// NPC_UseFocusFromItems rule (default false), and (b) reads items
+	// from the NPC equipment[] array instead of the inventory profile.
+	// Both are wrong for companions. The Mob base implementation uses
+	// GetInv().GetItem() (correct for companions) and has no rule gate.
+	int64 GetFocusEffect(focusType type, uint16 spell_id,
+	                     Mob *caster = nullptr,
+	                     bool from_buff_tic = false) override;
+
+	// -------------------------------------------------------
+	// Combat overrides — triple attack (Phase 2)
+	// -------------------------------------------------------
+	// Returns true when this companion's class and level qualify
+	// for triple attack. Does NOT roll — this is the eligibility check.
+	// Warriors: level 56+. Monks, Rangers: level 60+.
+	bool CanCompanionTripleAttack() const;
+
+	// Rolls for a triple attack success. Returns true if this attack
+	// round should include a third main-hand swing. Uses a chance value
+	// derived from the companion's level and class, matching the EQ
+	// damage bonus table approach (no SkillTripleAttack in DB for these
+	// classes, so we compute the chance directly).
+	bool CheckTripleAttack();
+
+	// Performs one round of melee attacks for this companion on the given
+	// target and hand (slotPrimary or slotSecondary). Includes double attack
+	// and triple attack (when eligible) — mirrors Bot::DoAttackRounds().
+	// Called from Companion::Process() instead of Mob::DoMainHandAttackRounds()
+	// when the companion is engaged and the attack timer fires.
+	void DoAttackRounds(Mob* target, int hand);
+
+	// -------------------------------------------------------
 	// AI Virtual Overrides
 	// -------------------------------------------------------
 	virtual void AI_Start(uint32 iMoveDelay = 0) override;
@@ -160,12 +243,17 @@ public:
 	// Shared spell selection helpers (companion_ai.cpp)
 	bool AI_HealGroupMember(bool engaged);
 	bool AI_BuffGroupMember();
+	bool AI_WizardBuff();           // Issue #8: wizard-specific buff — DS only to melee targets
 	bool AI_CureGroupMember();
 	bool AI_NukeTarget(uint32 nuke_types);
 	bool AI_SlowDebuff(Mob* target);
 	bool AI_MezTarget();
 	bool AI_SummonPet();
 	bool AI_InCombatBuff();
+
+	// Issue #6: Find the best Cannibalize spell (SE_CurrentMana self-spell)
+	// Returns 0 if no suitable spell is found in m_companion_spells.
+	uint16 FindCannibalizeSpell();
 
 	virtual void FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho) override;
 	uint32 GetEquipmentMaterial(uint8 material_slot) const override;
@@ -250,6 +338,14 @@ public:
 	void SendWearChange(uint8 material_slot);
 	uint32 GetEquipment(uint8 slot) const;
 	void SetEquipment(uint8 slot, uint32 item_id);
+
+	// Expose inventory profile as public so tests and external code can read equipped item data.
+	// Mob::GetInv() is protected; this public override makes it accessible without modifying mob.h.
+	virtual EQ::InventoryProfile& GetInv() override { return Mob::GetInv(); }
+
+	// Expose item bonuses as public for tests and external code.
+	// Mob::itembonuses is protected; this accessor avoids modifying mob.h.
+	const StatBonuses& GetItemBonuses() const { return itembonuses; }
 
 	// Equipment listing / retrieval (called from Lua companion.lua)
 	void ShowEquipment(Client* client);
@@ -353,8 +449,9 @@ protected:
 	Timer m_evade_timer;
 	Timer m_retention_check_timer;
 	Timer m_death_despawn_timer;
-	Timer m_ping_timer;          // keep-alive: prevents client culling idle entities
-	Timer m_mana_report_timer;   // mana % report via group say while sitting (15s interval)
+	Timer m_ping_timer;              // keep-alive: prevents client culling idle entities
+	Timer m_mana_report_timer;       // mana % report via group say while sitting (15s interval)
+	Timer m_sitting_regen_timer;     // 6-second cadence for sitting HP bonus (Issue #1 fix)
 
 	// Equipment: array of item IDs indexed by EQ::invslot::EQUIPMENT slots
 	uint32 m_equipment[EQ::invslot::EQUIPMENT_COUNT];

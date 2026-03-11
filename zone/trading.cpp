@@ -608,13 +608,11 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 		}
 
 		// we cast to any to pass through the quest event system
+		// NOTE: The range constructor includes all 4 trade slots (including nulls).
+		// The loop that re-appended valid items was removed because it caused
+		// duplicate entries in the item_list, resulting in items being returned
+		// twice during companion equipment trades (BUG-018).
 		std::vector<std::any> item_list(items.begin(), items.end());
-		for (EQ::ItemInstance *inst: items) {
-			if (!inst || !inst->GetItem()) {
-				continue;
-			}
-			item_list.emplace_back(inst);
-		}
 
 		auto handin_npc = tradingWith->CastToNPC();
 

@@ -1212,6 +1212,34 @@ RULE_BOOL(Companions, CompanionFleeEnabled, false, "Whether companions retain NP
 RULE_INT(Companions, FormationDistance, 15, "Distance in game units that companions follow behind the player in formation")
 RULE_INT(Companions, CasterCombatRange, 70, "Distance in game units that caster/healer companions maintain from targets in combat (0 = use default melee behavior)")
 RULE_BOOL(Companions, RogueBehindMob, true, "Whether rogue companions attempt to position behind their target to enable backstab")
+RULE_BOOL(Companions, UseWeaponDamage, true,
+	"When true, companions use equipped weapon damage and delay instead of "
+	"npc_types.max_dmg and attack_delay. When false, weapons remain cosmetic "
+	"for base damage (procs and bane still work).")
+RULE_INT(Companions, STAToHPFactor, 100,
+	"Phase 3: Percentage multiplier on the STA-to-HP conversion for companions "
+	"(100 = full conversion, 50 = half). Only bonus STA from items and spells "
+	"contributes — base NPC STA is already reflected in npc_types.max_hp.")
+RULE_INT(Companions, SittingRegenMult, 200,
+	"Phase 3: Sitting out-of-combat HP regen multiplier (percentage, 200 = 2x "
+	"standing OOC regen rate). Applies when companion is sitting and not engaged. "
+	"Stacks additively with the base OOC regen from Companions::OOCRegenPct.")
+RULE_INT(Companions, HealThresholdPct, 80,
+	"Phase 4: HP percentage below which companion healers begin healing in combat "
+	"(default 80). A value of 80 means healing triggers when any group member "
+	"drops below 80% HP during combat. Lower values mean healers are less proactive.")
+RULE_INT(Companions, ManaCutoffPct, 20,
+	"Phase 4: Mana percentage below which companion DPS casters stop nuking "
+	"(default 20). DPS casters (Wizard, Magician, Necromancer) reserve this "
+	"mana buffer for emergencies. Set to 0 to disable (cast until OOM).")
+RULE_INT(Companions, HealerManaConservePct, 30,
+	"Phase 4: Mana percentage below which healer companions switch to their "
+	"most mana-efficient heal spell (default 30). Above this threshold, healers "
+	"use their best/fastest heal. Below it, they use the cheapest available heal.")
+RULE_INT(Companions, ResistCapBase, 50,
+	"Phase 5: Base value for companion resist cap formula. "
+	"Cap = level * 5 + this value. At level 60 with default 50, cap is 350. "
+	"Set to 0 to disable resist capping entirely.")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

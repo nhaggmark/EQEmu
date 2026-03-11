@@ -22,6 +22,7 @@ set(zone_sources
     cli/tests/cli_databuckets.cpp
     cli/tests/cli_npc_handins.cpp
     cli/tests/cli_npc_handins_multiquest.cpp
+    cli/tests/cli_companion_tests.cpp
     cli/tests/cli_test_util.cpp
     cli/tests/cli_zone_state.cpp
     client.cpp

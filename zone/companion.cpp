@@ -53,7 +53,8 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	  m_death_despawn_timer(RuleI(Companions, DeathDespawnS) * 1000),
 	  m_replacement_spawn_timer(RuleI(Companions, ReplacementSpawnDelayS) * 1000),
 	  m_ping_timer(5000),
-	  m_mana_report_timer(15000)
+	  m_mana_report_timer(15000),
+	  m_sitting_regen_timer(6000)
 {
 	// Identity
 	m_companion_id          = 0;
@@ -100,9 +101,12 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	memset(m_equipment, 0, sizeof(m_equipment));
 
 	// Initialize inventory profile so CalcItemBonuses() can read equipped items via GetInv().GetItem().
-	// Companions are non-PC entities; use MobVersion::NPC (same slot layout as NPCs).
-	// Bot uses MobVersion::Bot — NPC is appropriate here since companions are NPC-derived.
-	GetInv().SetInventoryVersion(EQ::versions::MobVersion::NPC);
+	// MobVersion::Bot is required — not MobVersion::NPC — because the NPC version has a zero
+	// PossessionsBitmask which causes InventoryProfile::PutItem() to return SLOT_INVALID for all
+	// equipment slots. MobVersion::Bot has EntityLimits::Bot::invslot::POSSESSIONS_BITMASK which
+	// includes all equipment slots, allowing GiveItem() and LoadEquipment() to populate the profile
+	// so CalcItemBonuses() applies item stats correctly.
+	GetInv().SetInventoryVersion(EQ::versions::MobVersion::Bot);
 	GetInv().SetGMInventory(false);
 
 	// Disable retention check for companion-type (only mercs need it)
@@ -462,7 +466,637 @@ bool Companion::Attack(Mob* other, int Hand, bool FromRiposte, bool IsStrikethro
 		}
 	}
 
-	return NPC::Attack(other, Hand, FromRiposte, IsStrikethrough, IsFromSpell, opts);
+	// -------------------------------------------------------
+	// Phase 1 — Weapon Damage Path
+	// When UseWeaponDamage is true and a weapon is equipped in
+	// the attack hand, use the weapon's damage values instead of
+	// the npc_types base damage (GetBaseDamage / GetMinDamage).
+	// If the rule is false, or no weapon is in the slot, fall
+	// through to NPC::Attack() which uses the NPC base damage.
+	// -------------------------------------------------------
+	if (!RuleB(Companions, UseWeaponDamage)) {
+		return NPC::Attack(other, Hand, FromRiposte, IsStrikethrough, IsFromSpell, opts);
+	}
+
+	// Retrieve the equipped weapon from the inventory profile.
+	// Companions populate GetInv() via GiveItem()/LoadEquipment().
+	// NPCs use equipment[] + database.GetItem() instead; we must use GetInv() here.
+	const EQ::ItemInstance* weapon_inst = nullptr;
+	if (Hand == EQ::invslot::slotSecondary) {
+		weapon_inst = GetInv().GetItem(EQ::invslot::slotSecondary);
+	} else {
+		weapon_inst = GetInv().GetItem(EQ::invslot::slotPrimary);
+	}
+
+	// If no weapon is equipped (or item is not a weapon), fall back to NPC path.
+	if (!weapon_inst || !weapon_inst->IsWeapon()) {
+		return NPC::Attack(other, Hand, FromRiposte, IsStrikethrough, IsFromSpell, opts);
+	}
+
+	// --- Weapon-damage attack path (mirrors NPC::Attack but uses weapon->Damage) ---
+
+	if (DivineAura()) {
+		return false;
+	}
+
+	if (!GetTarget()) {
+		SetTarget(other);
+	}
+
+	if (!IsAttackAllowed(other)) {
+		RemoveFromHateList(other);
+		RemoveFromRampageList(other);
+		return false;
+	}
+
+	FaceTarget(GetTarget());
+
+	const EQ::ItemData* weapon = weapon_inst->GetItem();
+
+	if (Hand == EQ::invslot::slotSecondary) {
+		// Secondary hand only accepts 1H weapons
+		if (!weapon->IsType1HWeapon()) {
+			return false;
+		}
+		OffHandAtk(true);
+	} else {
+		OffHandAtk(false);
+	}
+
+	DamageHitInfo my_hit;
+	my_hit.hand         = Hand;
+	my_hit.damage_done  = 1;
+	my_hit.min_damage   = 0;
+
+	// Determine skill and send attack animation (Client-style: pass ItemInstance*).
+	// AttackAnimation sends the weapon swing packet to nearby clients and derives
+	// the skill type from the item type (1H slash, 2H blunt, etc.).
+	my_hit.skill = AttackAnimation(Hand, weapon_inst);
+
+	// Base damage from weapon via the shared GetWeaponDamage path (Client/Bot overload).
+	// This reads weapon->Damage and applies immunity checks for the target.
+	int64 hate = weapon->Damage + weapon->ElemDmgAmt;
+	my_hit.base_damage = GetWeaponDamage(other, weapon_inst, &hate);
+
+	if (hate == 0 && my_hit.base_damage > 1) {
+		hate = my_hit.base_damage;
+	}
+
+	if (my_hit.base_damage > 0) {
+		// Apply damage caps (same as Client path: attack.cpp:1649-1650)
+		if (Hand == EQ::invslot::slotPrimary || Hand == EQ::invslot::slotSecondary) {
+			my_hit.base_damage = DoDamageCaps(my_hit.base_damage);
+		}
+
+		// Bane and elemental damage (same logic as NPC::Attack, attack.cpp:2332-2353)
+		int eleBane = 0;
+		if (RuleB(NPC, UseBaneDamage)) {
+			if (weapon->BaneDmgBody == other->GetBodyType()) {
+				eleBane += weapon->BaneDmgAmt;
+			}
+			if (weapon->BaneDmgRace == other->GetRace()) {
+				eleBane += weapon->BaneDmgRaceAmt;
+			}
+		}
+		if (weapon->ElemDmgAmt) {
+			eleBane += static_cast<int>(weapon->ElemDmgAmt * other->ResistSpell(weapon->ElemDmgType, 0, this) / 100);
+		}
+		my_hit.base_damage += eleBane;
+		hate += eleBane;
+
+#ifndef EQEMU_NO_WEAPON_DAMAGE_BONUS
+		// Damage bonus: applied to primary hand hits at level 28+ for warrior classes.
+		// Mirrors Client path at attack.cpp:1674-1685.
+		if (Hand == EQ::invslot::slotPrimary && GetLevel() >= 28 && IsWarriorClass()) {
+			int ucDamageBonus = static_cast<int>(GetWeaponDamageBonus(weapon));
+			my_hit.min_damage = ucDamageBonus;
+			hate += ucDamageBonus;
+		}
+
+		// Sinister Strikes: offhand damage bonus when AA/item/spell bonus present
+		if (Hand == EQ::invslot::slotSecondary &&
+		    (aabonuses.SecondaryDmgInc || itembonuses.SecondaryDmgInc || spellbonuses.SecondaryDmgInc)) {
+			int ucDamageBonus = static_cast<int>(GetWeaponDamageBonus(weapon, true));
+			my_hit.min_damage = ucDamageBonus;
+			hate += ucDamageBonus;
+		}
+#endif
+
+		int hit_chance_bonus = 0;
+		my_hit.offense = offense(my_hit.skill);
+
+		if (opts) {
+			my_hit.base_damage *= opts->damage_percent;
+			my_hit.base_damage += opts->damage_flat;
+			hate *= opts->hate_percent;
+			hate += opts->hate_flat;
+			hit_chance_bonus += opts->hit_chance;
+		}
+
+		my_hit.tohit = GetTotalToHit(my_hit.skill, hit_chance_bonus);
+
+		DoAttack(other, my_hit, opts, FromRiposte);
+	} else {
+		my_hit.damage_done = DMG_INVULNERABLE;
+	}
+
+	other->AddToHateList(this, hate);
+
+	if (GetHP() > 0 && !other->HasDied()) {
+		other->Damage(this, my_hit.damage_done, SPELL_UNKNOWN, my_hit.skill, true, -1, false, m_specialattacks);
+	} else {
+		return false;
+	}
+
+	if (HasDied()) {
+		return false;
+	}
+
+	MeleeLifeTap(my_hit.damage_done);
+	CommonBreakInvisibleFromCombat();
+
+	if (!GetTarget()) {
+		return true; // killed them
+	}
+
+	bool has_hit = my_hit.damage_done > 0;
+	if (has_hit && !FromRiposte && !other->HasDied()) {
+		// TryWeaponProc expects ItemData* (NPC overload), not ItemInstance*
+		TryWeaponProc(nullptr, weapon, other, Hand);
+
+		if (!other->HasDied()) {
+			TrySpellProc(nullptr, weapon, other, Hand);
+		}
+
+		if (HasSkillProcSuccess() && !other->HasDied()) {
+			TrySkillProc(other, my_hit.skill, 0, true, Hand);
+		}
+	}
+
+	if (GetHP() > 0 && !other->HasDied()) {
+		TriggerDefensiveProcs(other, Hand, true, my_hit.damage_done);
+	}
+
+	return has_hit;
+}
+
+// ============================================================
+// SetAttackTimer — Weapon Delay Path (Phase 1)
+// ============================================================
+
+void Companion::SetAttackTimer()
+{
+	// When the rule is off, delegate to the standard NPC path
+	// (uses npc_types.attack_delay — unchanged behavior).
+	if (!RuleB(Companions, UseWeaponDamage)) {
+		NPC::SetAttackTimer();
+		return;
+	}
+
+	// Weapon-delay path: mirrors Client::SetAttackTimer() (attack.cpp:6682-6782)
+	// but reads weapons from the inventory profile (GetInv()) instead of GetBotItem().
+	// Guard against division by zero: GetHaste() can return 0 under 100% melee
+	// inhibition debuffs. Clamp to 0.01 (1% of normal speed) so the cast to int
+	// of (delay / haste_mod) never encounters infinity or undefined behavior.
+	float haste_mod = std::max(0.01f, GetHaste() * 0.01f);
+	int primary_speed   = 0;
+	int secondary_speed = 0;
+
+	// Default in case of no valid weapon
+	attack_timer.SetAtTrigger(4000, true);
+
+	Timer* TimerToUse = nullptr;
+
+	for (int i = EQ::invslot::slotRange; i <= EQ::invslot::slotSecondary; i++) {
+		if (i == EQ::invslot::slotPrimary) {
+			TimerToUse = &attack_timer;
+		} else if (i == EQ::invslot::slotRange) {
+			TimerToUse = &ranged_timer;
+		} else if (i == EQ::invslot::slotSecondary) {
+			TimerToUse = &attack_dw_timer;
+		} else {
+			continue; // hands — skip
+		}
+
+		// Dual wield check: disable offhand timer if class can't dual wield
+		if (i == EQ::invslot::slotSecondary) {
+			if (!CanThisClassDualWield() || HasTwoHanderEquipped()) {
+				attack_dw_timer.Disable();
+				continue;
+			}
+		}
+
+		// Get item from companion inventory profile
+		const EQ::ItemData* ItemToUse = nullptr;
+		EQ::ItemInstance* ci = GetInv().GetItem(i);
+		if (ci) {
+			ItemToUse = ci->GetItem();
+		}
+
+		// Validate weapon: must be a common item with non-zero damage and delay
+		if (ItemToUse != nullptr) {
+			if (!ItemToUse->IsClassCommon() || ItemToUse->Damage == 0 || ItemToUse->Delay == 0) {
+				ItemToUse = nullptr;
+			} else if ((ItemToUse->ItemType > EQ::item::ItemTypeLargeThrowing) &&
+			           (ItemToUse->ItemType != EQ::item::ItemTypeMartial) &&
+			           (ItemToUse->ItemType != EQ::item::ItemType2HPiercing)) {
+				ItemToUse = nullptr;
+			}
+		}
+
+		int hhe   = itembonuses.HundredHands + spellbonuses.HundredHands;
+		int delay = 0;
+
+		if (ItemToUse == nullptr) {
+			if (i == EQ::invslot::slotPrimary) {
+				delay = 100 * GetHandToHandDelay(); // unarmed fallback
+			} else {
+				// Range/secondary with no valid weapon: keep default or disable
+				if (i == EQ::invslot::slotSecondary) {
+					attack_dw_timer.Disable();
+				}
+				continue;
+			}
+		} else {
+			delay = 100 * ItemToUse->Delay;
+		}
+
+		int speed = static_cast<int>(delay / haste_mod);
+
+		if (ItemToUse && ItemToUse->ItemType == EQ::item::ItemTypeBow) {
+			// Companions don't carry quivers, so no quiver haste adjustment.
+			// Apply the minimum delay cap directly.
+			speed = std::max(speed, RuleI(Combat, QuiverHasteCap));
+		} else {
+			if (RuleB(Spells, Jun182014HundredHandsRevamp)) {
+				speed = static_cast<int>(speed + ((hhe / 1000.0f) * speed));
+			} else {
+				speed = static_cast<int>(speed + ((hhe / 100.0f) * delay));
+			}
+		}
+
+		bool reinit = !TimerToUse->Enabled();
+		TimerToUse->SetAtTrigger(std::max(RuleI(Combat, MinHastedDelay), speed), reinit, reinit);
+
+		if (i == EQ::invslot::slotPrimary) {
+			primary_speed = speed;
+		} else if (i == EQ::invslot::slotSecondary) {
+			secondary_speed = speed;
+		}
+	}
+
+	// Dual wield same-delay animation sync (matches Client::SetAttackTimer behavior)
+	if (primary_speed == secondary_speed) {
+		SetDualWieldingSameDelayWeapons(1);
+	} else {
+		SetDualWieldingSameDelayWeapons(0);
+	}
+}
+
+// ============================================================
+// CalcMaxHP — STA-to-HP Conversion (Phase 3)
+// ============================================================
+
+// CalcMaxHP: adds STA-based HP bonus on top of the standard NPC max HP.
+//
+// The NPC base formula (Mob::CalcMaxHP) already includes:
+//   max_hp = base_hp (from npc_types.max_hp) + itembonuses.HP
+//
+// Base HP from npc_types already accounts for the NPC's inherent STA
+// (the NPC was designed with some STA and that's baked into max_hp).
+// We must NOT convert the base STA again — that would double-count.
+//
+// What we DO convert: bonus STA from equipped items (itembonuses.STA)
+// and spell buffs (spellbonuses.STA). These are the stats gear/spells
+// actually add, and they should translate to HP just as they do for players.
+//
+// HP-per-STA-point at level 60:
+//   Tanks (Warrior, Paladin, Shadow Knight): 8 HP/STA
+//   Melee DPS (Monk, Ranger, Bard, Rogue, Beastlord, Berserker): 5 HP/STA
+//   Priest (Cleric, Druid, Shaman): 4 HP/STA
+//   Caster DPS (Wizard, Magician, Necromancer, Enchanter): 3 HP/STA
+//
+// The values scale linearly with level (level/60). For example, a level 30
+// warrior gets 4 HP/STA (8 * 30/60 = 4). This avoids overvaluing STA gear
+// on low-level companions.
+//
+// The Companions::STAToHPFactor rule (default 100) scales the entire formula
+// as a percentage — set to 50 to halve the STA-to-HP conversion if needed.
+int64 Companion::CalcMaxHP()
+{
+	// Call the NPC/Mob base to populate max_hp with base_hp + itembonuses.HP
+	// and apply PercentMaxHPChange / FlatMaxHPChange bonuses.
+	int64 base = Mob::CalcMaxHP();
+
+	// Only apply STA-to-HP if the rule is set to a positive factor.
+	int factor = RuleI(Companions, STAToHPFactor);
+	if (factor <= 0) {
+		return base;
+	}
+
+	// Bonus STA from equipped items and spells only.
+	// aabonuses.STA is always 0 for companions (no AAs).
+	int bonus_sta = static_cast<int>(itembonuses.STA) + static_cast<int>(spellbonuses.STA);
+	if (bonus_sta <= 0) {
+		return base;
+	}
+
+	// HP-per-STA base value at level 60 by class archetype.
+	// These match the approximate per-class values from the Client's CalcBaseHP() formula.
+	int hp_per_sta_at_60 = 3; // default: caster DPS
+	switch (GetClass()) {
+		case Class::Warrior:
+		case Class::Paladin:
+		case Class::ShadowKnight:
+			hp_per_sta_at_60 = 8;
+			break;
+		case Class::Monk:
+		case Class::Ranger:
+		case Class::Bard:
+		case Class::Rogue:
+		case Class::Beastlord:
+		case Class::Berserker:
+			hp_per_sta_at_60 = 5;
+			break;
+		case Class::Cleric:
+		case Class::Druid:
+		case Class::Shaman:
+			hp_per_sta_at_60 = 4;
+			break;
+		// Wizard, Magician, Necromancer, Enchanter: default 3
+		default:
+			hp_per_sta_at_60 = 3;
+			break;
+	}
+
+	// Scale HP-per-STA linearly with level (capped at 60 for progression purposes).
+	// A level 30 warrior gets 8 * 30/60 = 4 HP/STA, not 8.
+	int level = static_cast<int>(GetLevel());
+	int cap_level = std::min(level, 60);
+
+	// Compute HP bonus: bonus_sta * hp_per_sta * level/60 * factor/100
+	// Use integer arithmetic with care to avoid truncation to zero.
+	// Order: multiply first, divide last.
+	int64 hp_bonus = static_cast<int64>(bonus_sta) * hp_per_sta_at_60 * cap_level * factor;
+	hp_bonus /= 6000; // (60 levels * 100 factor)
+
+	max_hp = base + hp_bonus;
+	return max_hp;
+}
+
+// ============================================================
+// CalcMaxMana — Level-Scaled Mana Preservation (BUG-017 fix)
+// ============================================================
+
+// CalcMaxMana: preserves the level-scaled max_mana set by ScaleStatsToLevel().
+//
+// Without this override, NPC::CalcMaxMana() runs whenever CalcBonuses() is
+// called. It resets max_mana to either:
+//   - npc_mana + bonuses (when npc_mana != 0): ignores level scaling entirely
+//   - ((INT or WIS)/2 + 1) * level + bonuses (when npc_mana == 0): re-derives
+//     from current INT/WIS which was scaled, producing an inconsistent value
+//
+// This override reconstructs max_mana from the level-scaled base:
+//   scaled_base = m_base_mana * GetLevel() / m_recruited_level
+// Then adds item and spell mana bonuses on top. Non-caster classes get 0.
+//
+// This mirrors the CalcMaxHP() override pattern: we bypass the NPC formula
+// entirely and compute from the stored base values instead.
+//
+// Note: m_base_mana is the max_mana value at recruitment time (before any
+// scaling). m_recruited_level is the NPC level at recruitment. Both are set
+// by StoreBaseStats() during construction.
+int64 Companion::CalcMaxMana()
+{
+	// Non-caster companions have no mana pool.
+	if (!IsIntelligenceCasterClass() && !IsWisdomCasterClass()) {
+		max_mana = 0;
+		return 0;
+	}
+
+	// When npc_mana == 0, the NPC type stores no explicit mana value.
+	// NPC::CalcMaxMana() derives mana from the INT or WIS formula:
+	//   ((INT/2) + 1) * level + bonuses
+	// Since ScaleStatsToLevel() already scaled both INT/WIS and level,
+	// this formula scales proportionally — no fix is needed for this path.
+	// Fall through to the NPC formula in this case.
+	if (npc_mana == 0) {
+		return NPC::CalcMaxMana();
+	}
+
+	// When npc_mana != 0, NPC::CalcMaxMana() returns npc_mana + bonuses,
+	// ignoring the current level entirely. This is the broken path: after
+	// ScaleStatsToLevel() sets max_mana = m_base_mana * scale, CalcBonuses()
+	// calls NPC::CalcMaxMana() which resets max_mana to the unscaled npc_mana.
+	//
+	// Fix: reconstruct max_mana from the level-scaled base instead of npc_mana.
+
+	// Guard against division by zero (should never happen post-construction).
+	if (m_recruited_level == 0) {
+		max_mana = 0;
+		return 0;
+	}
+
+	// Reconstruct the level-scaled base mana from the stored recruitment values.
+	// Use float division to match ScaleStatsToLevel() precision.
+	float scale = static_cast<float>(GetLevel()) / static_cast<float>(m_recruited_level);
+	int64 scaled_base = static_cast<int64>(static_cast<float>(m_base_mana) * scale);
+
+	// Add item and spell mana bonuses (same as NPC::CalcMaxMana does for bonuses).
+	// aabonuses.Mana is always 0 for companions (no AAs).
+	max_mana = scaled_base + itembonuses.Mana + spellbonuses.Mana;
+
+	if (max_mana < 0) {
+		max_mana = 0;
+	}
+
+	// Clamp current_mana to the new max so we don't display > 100% mana.
+	if (current_mana > max_mana) {
+		current_mana = max_mana;
+	}
+
+	return max_mana;
+}
+
+// ============================================================
+// Resist Caps — Phase 5
+// ============================================================
+
+// GetMaxResist: returns the companion's resist cap.
+//
+// Formula: level * 5 + ResistCapBase (default 50).
+// At level 60 with default ResistCapBase=50: cap = 350.
+// At level 65 with default: cap = 375.
+//
+// This is intentionally lower than the Client cap of 500, placing
+// companion resist ceiling at ~70% of player cap — matching the
+// 70-85% power target from the PRD.
+//
+// Setting ResistCapBase to 0 disables resist capping entirely
+// (returns 32000, a value no companion resist can realistically reach).
+int32 Companion::GetMaxResist() const
+{
+	int rule_base = RuleI(Companions, ResistCapBase);
+	if (rule_base <= 0) {
+		return 32000;
+	}
+	return static_cast<int32>(GetLevel()) * 5 + rule_base;
+}
+
+// ============================================================
+// Focus Effects — Phase 5
+// ============================================================
+
+// GetFocusEffect: delegates to Mob::GetFocusEffect (the base class)
+// instead of NPC::GetFocusEffect.
+//
+// Why: NPC::GetFocusEffect has two problems for companions:
+//   1. It gates item focus behind RuleB(Spells, NPC_UseFocusFromItems),
+//      which defaults to false — completely disabling item focus for all NPCs.
+//   2. It reads items from the NPC equipment[] array (raw IDs from npc_types)
+//      rather than the inventory profile. Companions store their equipped
+//      items via GiveItem() -> GetInv().PutItem() in the inventory profile,
+//      not in equipment[]. Using equipment[] returns stale/wrong items.
+//
+// Mob::GetFocusEffect uses GetInv().GetItem() (correct for companions)
+// and has no NPC_UseFocusFromItems rule gate. Delegating here enables
+// both item-derived and spell-derived focus effects with a single call.
+int64 Companion::GetFocusEffect(focusType type, uint16 spell_id,
+                                Mob *caster, bool from_buff_tic)
+{
+	return Mob::GetFocusEffect(type, spell_id, caster, from_buff_tic);
+}
+
+// ============================================================
+// Triple Attack — Phase 2
+// ============================================================
+
+// CanCompanionTripleAttack: level and class eligibility check (no RNG).
+// Warriors triple at 56+. Monks and Rangers triple at 60+.
+// All other classes never triple attack.
+// This is called from CheckTripleAttack() and is public for testing.
+bool Companion::CanCompanionTripleAttack() const
+{
+	uint8 level = GetLevel();
+	uint8 cls   = GetClass();
+
+	switch (cls) {
+		case Class::Warrior:
+			return level >= 56;
+		case Class::Monk:
+		case Class::Ranger:
+			return level >= 60;
+		default:
+			return false;
+	}
+}
+
+// CheckTripleAttack: rolls for triple attack success.
+// Uses a percent chance derived from level, scaled by the ClassicTripleAttack
+// rule values if ClassicTripleAttack is true, or a skill-derived chance if
+// ClassicTripleAttack is false (matching Bot::CheckTripleAttack logic).
+// Returns false immediately when CanCompanionTripleAttack() is false.
+bool Companion::CheckTripleAttack()
+{
+	if (!CanCompanionTripleAttack()) {
+		return false;
+	}
+
+	int chance = 0;
+
+	if (RuleB(Combat, ClassicTripleAttack)) {
+		// Classic mode: use per-class rule values (same as Client/Bot).
+		switch (GetClass()) {
+			case Class::Warrior:
+				chance = RuleI(Combat, ClassicTripleAttackChanceWarrior);
+				break;
+			case Class::Monk:
+				chance = RuleI(Combat, ClassicTripleAttackChanceMonk);
+				break;
+			case Class::Ranger:
+				chance = RuleI(Combat, ClassicTripleAttackChanceRanger);
+				break;
+			default:
+				return false;
+		}
+	} else {
+		// Modern mode: skill-based chance (Bot::CheckTripleAttack line 2080).
+		// SkillCaps lacks SkillTripleAttack for Warriors/Monks/Rangers in this DB,
+		// so we derive a reasonable chance from level (25 base + 1 per level over 56/60).
+		// This gives warriors a 25% base at 56, growing to 29% at 60.
+		// Monks/Rangers start at 25% at 60.
+		uint8 level = GetLevel();
+		uint8 cls   = GetClass();
+		if (cls == Class::Warrior) {
+			chance = 25 + (level > 56 ? (level - 56) : 0);
+		} else {
+			// Monk, Ranger
+			chance = 25 + (level > 60 ? (level - 60) : 0);
+		}
+	}
+
+	if (chance < 1) {
+		return false;
+	}
+
+	// Apply bonus chance from item/spell bonuses (same as Bot path)
+	int inc = aabonuses.TripleAttackChance + spellbonuses.TripleAttackChance + itembonuses.TripleAttackChance;
+	if (inc != 0) {
+		chance = static_cast<int>(chance * (1.0f + inc / 100.0f));
+	}
+
+	return zone->random.Int(1, 100) <= chance;
+}
+
+// DoAttackRounds: performs one round of melee attacks on the target.
+// Mirrors Bot::DoAttackRounds (bot.cpp:2851-2947) but without AA-based
+// extra attacks since companions don't have AAs.
+// Called from Companion::Process() when attack_timer fires.
+void Companion::DoAttackRounds(Mob* target, int hand)
+{
+	if (!target || target->IsCorpse()) {
+		return;
+	}
+
+	// Primary attack
+	Attack(target, hand, false, false, false);
+
+	if (!target || target->HasDied()) {
+		return;
+	}
+
+	// Double attack check
+	bool can_double = CanThisClassDoubleAttack();
+
+	// Off-hand double attack requires DoubleAttack skill >= 150 or bonus
+	// (matching Bot behavior at bot.cpp:2861-2864)
+	if (can_double && hand == EQ::invslot::slotSecondary) {
+		can_double =
+			GetSkill(EQ::skills::SkillDoubleAttack) > 149 ||
+			(aabonuses.GiveDoubleAttack + spellbonuses.GiveDoubleAttack + itembonuses.GiveDoubleAttack) > 0;
+	}
+
+	if (can_double && CheckDoubleAttack()) {
+		Attack(target, hand, false, false, false);
+
+		if (!target || target->HasDied()) {
+			return;
+		}
+
+		// Triple attack: primary hand only, class/level eligible
+		if (hand == EQ::invslot::slotPrimary && CanCompanionTripleAttack()) {
+			if (CheckTripleAttack()) {
+				Attack(target, hand, false, false, false);
+
+				// Flurry chance from buffs/items (no AAs on companions)
+				int flurry_chance = spellbonuses.FlurryChance + itembonuses.FlurryChance;
+				if (flurry_chance && zone->random.Roll(flurry_chance)) {
+					if (!target || target->HasDied()) { return; }
+					Attack(target, hand, false, false, false);
+				}
+			}
+		}
+	}
 }
 
 // ============================================================
@@ -1018,6 +1652,64 @@ bool Companion::Process()
 	// pursuit. For rogues this routes them behind the target. Must run after target
 	// selection so GetTarget() is current.
 	UpdateCombatPositioning();
+
+	// Triple attack interception (Phase 2):
+	// Mob::DoMainHandAttackRounds() with UseLiveCombatRounds=true only does double
+	// attack — it never calls triple attack. This intercept fires the attack timers
+	// here (consuming them) so NPC::Process() -> AI_Process() sees them as not ready
+	// and skips its own melee call. We then perform the full DoAttackRounds() sequence
+	// which includes triple attack for qualifying classes and levels.
+	// Mirrors the same pattern used by Bot::Process() -> Bot::DoAttackRounds().
+	if (IsEngaged() && !IsStunned() && !IsMezzed() &&
+	    GetAppearance() != eaDead && !IsMeleeDisabled()) {
+		Mob* atk_target = GetTarget();
+		if (atk_target) {
+			if (attack_timer.Check()) {
+				DoAttackRounds(atk_target, EQ::invslot::slotPrimary);
+				TriggerDefensiveProcs(atk_target, EQ::invslot::slotPrimary, false);
+			}
+			if (CanThisClassDualWield() && attack_dw_timer.Check()) {
+				if (CheckDualWield()) {
+					DoAttackRounds(atk_target, EQ::invslot::slotSecondary);
+					TriggerDefensiveProcs(atk_target, EQ::invslot::slotSecondary, false);
+				}
+			}
+		}
+	}
+
+	// Sitting HP regen bonus (Phase 3, corrected by audit Issue #1):
+	// NPC::Process() regen code adds only 3 HP/tick for sitting (npc_sitting_regen_bonus).
+	// For companions, we want 2-3x the OOC regen rate when sitting and out of combat.
+	// We apply an additive sitting bonus BEFORE NPC::Process() runs, so the total
+	// regen for a sitting OOC companion is:
+	//   NPC::Process() OOC regen  (max(hp_regen, ooc_regen_calc) + 3)
+	//   + sitting bonus (base_ooc * (SittingRegenMult - 100) / 100)
+	//
+	// At SittingRegenMult=200 (2x): sitting bonus equals the base OOC regen,
+	// so total sitting regen = 2x the standing OOC regen rate.
+	//
+	// CRITICAL: This must be gated behind m_sitting_regen_timer (6-second cadence)
+	// to match the tic-based regen in NPC::Process(). Without this gate, the bonus
+	// fires on every Process() tick (~6-40 times per 6-second tic), causing 24-40x
+	// overregen that refills HP almost instantly.
+	//
+	// Conditions: must be sitting, not engaged, have HP to recover, and timer fired.
+	if (IsSitting() && !IsEngaged() && GetHP() < GetMaxHP()
+	    && m_sitting_regen_timer.Check()) {
+		int mult = RuleI(Companions, SittingRegenMult);
+		if (mult > 100) {
+			// Compute the OOC regen amount NPC::Process would apply
+			int ooc_pct = RuleI(Companions, OOCRegenPct);
+			if (ooc_pct > 0) {
+				int64 base_ooc = (GetMaxHP() * ooc_pct) / 100;
+				// Additive bonus beyond the base OOC regen
+				int64 sitting_bonus = (base_ooc * (mult - 100)) / 100;
+				if (sitting_bonus > 0) {
+					SetHP(std::min(GetHP() + sitting_bonus, GetMaxHP()));
+				}
+			}
+		}
+	}
 
 	bool npc_result = NPC::Process();
 	if (!npc_result) {
