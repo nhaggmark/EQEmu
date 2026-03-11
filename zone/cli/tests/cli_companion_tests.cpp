@@ -2900,9 +2900,10 @@ inline void TestCompanionPhase5ResistCapsAndFocusEffects()
 	}
 
 	// ------------------------------------------------------------
-	// 15.4: GetMR is capped at GetMaxResist
-	// Setup: level ~60 warrior, force MR + itembonuses.MR + spellbonuses.MR > cap
-	// Expected: GetMR() returns GetMaxResist(), not the uncapped sum
+	// 15.4: GetMR is capped at GetMaxResist when item bonus forces it above the cap
+	// Setup: level ~60 warrior (cap = 350). Force itembonuses.MR = 400 so that
+	// base MR + 400 >> 350. GetMR() must return exactly 350 (the cap), not 400+base.
+	// This is the discriminating test: trivially true if we only checked <= without load.
 	// ------------------------------------------------------------
 	{
 		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
@@ -2910,28 +2911,24 @@ inline void TestCompanionPhase5ResistCapsAndFocusEffects()
 			SkipTest("Phase5 > 15.4 GetMR capped at GetMaxResist",
 				"No warrior near level 60 found in DB");
 		} else {
-			int cap = comp->GetMaxResist();
-			// Set base MR to 200 and item/spell bonuses to push total above cap
-			// We directly manipulate the StatBonuses to simulate stacked resists.
-			// The companion's base MR (from npc_types) is stored in MR field.
-			// We set itembonuses.MR and spellbonuses.MR high enough to exceed cap.
-			int original_mr = comp->GetMR(); // current uncapped value
-			// Force itembonuses + spellbonuses to push total well above cap
-			// by directly setting the bonus fields through the public accessor.
-			// Note: We use const_cast since GetItemBonuses returns const ref.
-			// In tests, we need to manipulate internals — companion exposes GetItemBonuses.
-			// Instead of direct modification, test with the formula:
-			// if current MR (base only) + large bonus > cap, MR should be capped.
-			// We test the math: GetMR() must equal min(actual_sum, cap).
-			//
-			// Since we can't easily force MR over cap without live spell/item data,
-			// we verify GetMR() is <= GetMaxResist() (structural cap guarantee).
-			bool mr_bounded = (comp->GetMR() <= comp->GetMaxResist());
-			RunTest("Phase5 > 15.4 GetMR is bounded by GetMaxResist (ceiling)",
-				true, mr_bounded);
+			int cap = comp->GetMaxResist(); // e.g. 350 for level 60
 
-			// Additional: verify cap math is correct
-			// Expected cap for level = level*5+50
+			// Force itembonuses.MR = 400 — well above cap regardless of base MR.
+			// GetItemBonusesPtr() returns a mutable pointer to the StatBonuses struct.
+			StatBonuses* ib = comp->GetItemBonusesPtr();
+			int orig_mr_bonus = ib->MR;
+			ib->MR = 400;
+
+			// GetMR() = min(MR + 400 + spellbonuses.MR, cap)
+			// Because 400 > cap on its own, the result must equal cap.
+			int capped_mr = comp->GetMR();
+			RunTest("Phase5 > 15.4 GetMR clamped to cap when itembonuses.MR=400 above cap",
+				cap, capped_mr);
+
+			// Restore bonus so subsequent tests are not affected.
+			ib->MR = orig_mr_bonus;
+
+			// Verify cap formula is correct.
 			int computed_cap = static_cast<int>(comp->GetLevel()) * 5 +
 			                   RuleI(Companions, ResistCapBase);
 			RunTest("Phase5 > 15.4 GetMaxResist matches level*5+ResistCapBase formula",
@@ -2940,58 +2937,82 @@ inline void TestCompanionPhase5ResistCapsAndFocusEffects()
 	}
 
 	// ------------------------------------------------------------
-	// 15.5: GetFR is capped at GetMaxResist
+	// 15.5: GetFR is capped at GetMaxResist when item bonus forces it above the cap
+	// Force itembonuses.FR = 400 and verify GetFR() == cap (not 400+base).
 	// ------------------------------------------------------------
 	{
 		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
 		if (!comp) {
 			SkipTest("Phase5 > 15.5 GetFR capped", "No warrior near level 60");
 		} else {
-			bool fr_bounded = (comp->GetFR() <= comp->GetMaxResist());
-			RunTest("Phase5 > 15.5 GetFR is bounded by GetMaxResist",
-				true, fr_bounded);
+			int cap = comp->GetMaxResist();
+			StatBonuses* ib = comp->GetItemBonusesPtr();
+			int orig_fr_bonus = ib->FR;
+			ib->FR = 400;
+			int capped_fr = comp->GetFR();
+			RunTest("Phase5 > 15.5 GetFR clamped to cap when itembonuses.FR=400 above cap",
+				cap, capped_fr);
+			ib->FR = orig_fr_bonus;
 		}
 	}
 
 	// ------------------------------------------------------------
-	// 15.6: GetDR is capped at GetMaxResist
+	// 15.6: GetDR is capped at GetMaxResist when item bonus forces it above the cap
+	// Force itembonuses.DR = 400 and verify GetDR() == cap (not 400+base).
 	// ------------------------------------------------------------
 	{
 		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
 		if (!comp) {
 			SkipTest("Phase5 > 15.6 GetDR capped", "No warrior near level 60");
 		} else {
-			bool dr_bounded = (comp->GetDR() <= comp->GetMaxResist());
-			RunTest("Phase5 > 15.6 GetDR is bounded by GetMaxResist",
-				true, dr_bounded);
+			int cap = comp->GetMaxResist();
+			StatBonuses* ib = comp->GetItemBonusesPtr();
+			int orig_dr_bonus = ib->DR;
+			ib->DR = 400;
+			int capped_dr = comp->GetDR();
+			RunTest("Phase5 > 15.6 GetDR clamped to cap when itembonuses.DR=400 above cap",
+				cap, capped_dr);
+			ib->DR = orig_dr_bonus;
 		}
 	}
 
 	// ------------------------------------------------------------
-	// 15.7: GetPR is capped at GetMaxResist
+	// 15.7: GetPR is capped at GetMaxResist when item bonus forces it above the cap
+	// Force itembonuses.PR = 400 and verify GetPR() == cap (not 400+base).
 	// ------------------------------------------------------------
 	{
 		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
 		if (!comp) {
 			SkipTest("Phase5 > 15.7 GetPR capped", "No warrior near level 60");
 		} else {
-			bool pr_bounded = (comp->GetPR() <= comp->GetMaxResist());
-			RunTest("Phase5 > 15.7 GetPR is bounded by GetMaxResist",
-				true, pr_bounded);
+			int cap = comp->GetMaxResist();
+			StatBonuses* ib = comp->GetItemBonusesPtr();
+			int orig_pr_bonus = ib->PR;
+			ib->PR = 400;
+			int capped_pr = comp->GetPR();
+			RunTest("Phase5 > 15.7 GetPR clamped to cap when itembonuses.PR=400 above cap",
+				cap, capped_pr);
+			ib->PR = orig_pr_bonus;
 		}
 	}
 
 	// ------------------------------------------------------------
-	// 15.8: GetCR is capped at GetMaxResist
+	// 15.8: GetCR is capped at GetMaxResist when item bonus forces it above the cap
+	// Force itembonuses.CR = 400 and verify GetCR() == cap (not 400+base).
 	// ------------------------------------------------------------
 	{
 		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
 		if (!comp) {
 			SkipTest("Phase5 > 15.8 GetCR capped", "No warrior near level 60");
 		} else {
-			bool cr_bounded = (comp->GetCR() <= comp->GetMaxResist());
-			RunTest("Phase5 > 15.8 GetCR is bounded by GetMaxResist",
-				true, cr_bounded);
+			int cap = comp->GetMaxResist();
+			StatBonuses* ib = comp->GetItemBonusesPtr();
+			int orig_cr_bonus = ib->CR;
+			ib->CR = 400;
+			int capped_cr = comp->GetCR();
+			RunTest("Phase5 > 15.8 GetCR clamped to cap when itembonuses.CR=400 above cap",
+				cap, capped_cr);
+			ib->CR = orig_cr_bonus;
 		}
 	}
 
@@ -3023,7 +3044,9 @@ inline void TestCompanionPhase5ResistCapsAndFocusEffects()
 	}
 
 	// ------------------------------------------------------------
-	// 15.10: ResistCapBase = 0 disables capping (returns 32000)
+	// 15.10: ResistCapBase = 0 disables capping (GetMaxResist returns 32000)
+	// This is the discriminating test: set the rule to 0, verify the disable
+	// path returns 32000, then restore the rule and verify normal cap is active.
 	// ------------------------------------------------------------
 	{
 		Companion* comp = CreateTestCompanionByClass(1, 60, 0);
@@ -3031,20 +3054,33 @@ inline void TestCompanionPhase5ResistCapsAndFocusEffects()
 			SkipTest("Phase5 > 15.10 ResistCapBase=0 disables cap",
 				"No warrior near level 60");
 		} else {
-			// Temporarily override the rule to 0 to test disable mechanism.
-			// Since we can't easily change rule values in tests without side effects,
-			// we test the logic directly: GetMaxResist with rule=0 should return 32000.
-			// We verify the structural contract by checking that when rule is default (50),
-			// the cap is NOT 32000 (i.e., capping is active).
+			// Step 1: confirm default rule (50) produces a non-32000 cap.
 			int cap_with_default = comp->GetMaxResist();
-			bool capping_active = (cap_with_default != 32000);
-			RunTest("Phase5 > 15.10 ResistCapBase default (50) activates capping (cap != 32000)",
-				true, capping_active);
+			RunTest("Phase5 > 15.10 ResistCapBase=50 (default) does not disable cap",
+				true, cap_with_default != 32000);
 
-			// Verify cap is level-based (not flat)
-			bool cap_level_based = (cap_with_default > 50 && cap_with_default < 1000);
-			RunTest("Phase5 > 15.10 GetMaxResist is level-scaled (between 50 and 1000)",
-				true, cap_level_based);
+			// Step 2: set ResistCapBase to 0 — disable mechanism engaged.
+			// GetMaxResist() re-evaluates RuleI each call, so this takes effect immediately.
+			RuleManager::Instance()->SetRule("Companions:ResistCapBase", "0");
+			int cap_with_zero = comp->GetMaxResist();
+			RunTest("Phase5 > 15.10 ResistCapBase=0 disables capping (returns 32000)",
+				32000, cap_with_zero);
+
+			// Step 3: with cap disabled, a high itembonuses.MR should pass through unclamped.
+			// 32000 is unreachable, so GetMR() should return the actual sum, not 32000.
+			StatBonuses* ib = comp->GetItemBonusesPtr();
+			int orig_mr_bonus = ib->MR;
+			ib->MR = 400;
+			int mr_no_cap = comp->GetMR(); // should be MR_base + 400, not clamped to 350
+			RunTest("Phase5 > 15.10 GetMR with rule=0 exceeds normal cap (>350)",
+				true, mr_no_cap > 350);
+			ib->MR = orig_mr_bonus;
+
+			// Step 4: restore rule to 50 and verify capping is back.
+			RuleManager::Instance()->SetRule("Companions:ResistCapBase", "50");
+			int cap_restored = comp->GetMaxResist();
+			RunTest("Phase5 > 15.10 ResistCapBase restored to 50: capping re-enabled",
+				cap_with_default, cap_restored);
 		}
 	}
 
