@@ -35,6 +35,8 @@
 //   6. Spell Loading
 //   7. Group Integration
 //   8. Stance and Role Assignment
+//   9. Phase 1 — Weapon Damage Path
+//  10. Regression — South Ro ACSum CastToBot Crash (BUG: shield in slotSecondary)
 // ============================================================
 
 #include "zone/zone_cli.h"
@@ -992,6 +994,193 @@ inline void TestCompanionWeaponDamagePath()
 }
 
 // ============================================================
+// Suite 10: Regression — South Ro Crash Loop (BUG: ACSum CastToBot)
+//
+// Regression tests for the crash that occurred in South Ro when
+// Companion::LoadEquipment() was called during zone-in. The call chain was:
+//
+//   LoadEquipment() -> CalcBonuses() -> CalcAC() -> ACSum()
+//     -> HasShieldEquipped() == true (shield in slotSecondary / slot 14)
+//     -> IsOfClientBot() == true  (Companion returns true)
+//     -> IsClient() == false, IsCompanion() was NOT checked (pre-fix)
+//     -> CastToBot() on a non-Bot entity -> CRASH
+//
+// The fix added IsCompanion() to the guard in ACSum() so that Companions
+// use GetInv().GetItem(slotSecondary) instead of CastToBot()->GetBotItem().
+//
+// These tests MUST pass. If any of them crashes, the regression has returned.
+// ============================================================
+
+inline void TestCompanionSouthRoRegressionACSum()
+{
+	std::cout << "\n--- Suite 10: Regression — South Ro ACSum CastToBot Crash ---\n";
+
+	// Find a shield item so we can exercise the HasShieldEquipped() branch in ACSum().
+	// ItemTypeShield = 8
+	uint32 shield_id = 0;
+	{
+		auto results = content_db.QueryDatabase(
+			fmt::format("SELECT `id` FROM `items` WHERE `itemtype` = {} AND `ac` > 0 LIMIT 1",
+				static_cast<int>(EQ::item::ItemTypeShield))
+		);
+		if (results.Success() && results.RowCount() > 0) {
+			auto row = results.begin();
+			shield_id = static_cast<uint32>(atoi(row[0]));
+		}
+	}
+
+	// Find a 1H weapon to put in slotPrimary (so the companion has something to fight with)
+	uint32 weapon_id = FindWeapon(5, 50, 20, 50);
+
+	// Find armor for several slots to load up the item bonuses
+	uint32 armor_chest_id = 0;
+	uint32 armor_head_id  = 0;
+	{
+		auto results = content_db.QueryDatabase(
+			fmt::format("SELECT `id` FROM `items` WHERE `ac` >= 10 AND `itemtype` = {} LIMIT 1",
+				static_cast<int>(EQ::item::ItemTypeArmor))
+		);
+		if (results.Success() && results.RowCount() > 0) {
+			auto row = results.begin();
+			armor_chest_id = static_cast<uint32>(atoi(row[0]));
+			armor_head_id  = armor_chest_id; // reuse same item for both slots (adequate for this test)
+		}
+	}
+
+	// ---- Test 10.1: Companion identity — IsOfClientBot() is true but IsBot() is false ----
+	// This was the root cause: IsOfClientBot() routed Companion into the Bot-specific branch
+	// of ACSum(), which then called CastToBot() on a non-Bot entity.
+	Companion* comp = CreateTestCompanionByClass(1, 50, 0); // warrior
+	if (!comp) {
+		SkipTest("Regression/ACSum > All tests", "No warrior NPC found in DB");
+		return;
+	}
+	RunTest("Regression/ACSum > IsOfClientBot() == true (routes to Client/Bot AC path)",
+		true, comp->IsOfClientBot());
+	RunTest("Regression/ACSum > IsBot() == false (must NOT call CastToBot)",
+		false, comp->IsBot());
+	RunTest("Regression/ACSum > IsCompanion() == true (guard added by the fix)",
+		true, comp->IsCompanion());
+
+	// ---- Test 10.2: CalcBonuses() with no equipment does not crash ----
+	// This is the base case: the ACSum() path is entered but HasShieldEquipped() returns
+	// false, so CastToBot() is never reached. Must be safe.
+	comp->CalcBonuses();
+	RunTest("Regression/ACSum > CalcBonuses() with empty equipment does not crash",
+		true, true);
+
+	// ---- Test 10.3: Equip shield in slotSecondary (slot 14) then CalcBonuses() ----
+	// This is the EXACT crash path from South Ro.
+	// Pre-fix: HasShieldEquipped()=true, IsOfClientBot()=true, IsClient()=false
+	//          => CastToBot() called on Companion => crash.
+	// Post-fix: IsCompanion() guard prevents CastToBot() call.
+	if (shield_id == 0) {
+		SkipTest("Regression/ACSum > Shield in slotSecondary CalcBonuses crash test",
+			"No shield with AC > 0 found in items table");
+	} else {
+		comp->GiveItem(shield_id, EQ::invslot::slotSecondary);
+		RunTest("Regression/ACSum > Shield equipped in slotSecondary (slot 14)",
+			static_cast<int>(shield_id),
+			static_cast<int>(comp->GetEquipment(EQ::invslot::slotSecondary)));
+		// The critical assertion: HasShieldEquipped() must return true to exercise the branch
+		RunTest("Regression/ACSum > HasShieldEquipped() == true after equipping shield",
+			true, comp->HasShieldEquipped());
+
+		// THIS IS THE REGRESSION TEST: CalcBonuses -> CalcAC -> ACSum with shield equipped.
+		// If the IsCompanion() guard in ACSum() is ever removed, this call will crash.
+		comp->CalcBonuses();
+		RunTest("Regression/ACSum > CalcBonuses() with shield in slotSecondary does not crash",
+			true, true);
+
+		// Verify AC is non-zero (item bonuses were applied; bonuses + base AC combined)
+		int ac_after = static_cast<int>(comp->GetAC());
+		RunTestGreaterThan("Regression/ACSum > GetAC() > 0 after CalcBonuses with shield equipped",
+			ac_after, 0);
+
+		comp->RemoveItemFromSlot(EQ::invslot::slotSecondary);
+	}
+
+	// ---- Test 10.4: Multi-slot load then CalcBonuses — mirrors LoadEquipment() call chain ----
+	// LoadEquipment() populates multiple slots and then calls CalcBonuses().
+	// This test replicates that sequence to confirm the full equipment-load path is safe.
+	if (shield_id != 0) {
+		// Load chest, head, primary weapon, and secondary shield — same pattern as LoadEquipment
+		if (armor_chest_id != 0) {
+			comp->GiveItem(armor_chest_id, EQ::invslot::slotChest);
+		}
+		if (armor_head_id != 0) {
+			comp->GiveItem(armor_head_id, EQ::invslot::slotHead);
+		}
+		if (weapon_id != 0) {
+			comp->GiveItem(weapon_id, EQ::invslot::slotPrimary);
+		}
+		comp->GiveItem(shield_id, EQ::invslot::slotSecondary);
+
+		// CalcBonuses is what LoadEquipment() calls at its end.
+		// Pre-fix this would crash via ACSum -> CastToBot.
+		comp->CalcBonuses();
+		RunTest("Regression/ACSum > CalcBonuses() after multi-slot load (LoadEquipment pattern) does not crash",
+			true, true);
+
+		// Confirm item bonuses are non-zero — the CalcBonuses() call actually did work
+		int item_ac = static_cast<int>(comp->GetItemBonuses().AC);
+		RunTestGreaterThan("Regression/ACSum > itembonuses.AC > 0 after multi-slot load",
+			item_ac, 0);
+
+		int total_ac = static_cast<int>(comp->GetAC());
+		RunTestGreaterThan("Regression/ACSum > GetAC() > 0 after multi-slot load",
+			total_ac, 0);
+
+		// Clean up
+		comp->RemoveItemFromSlot(EQ::invslot::slotSecondary);
+		comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+		if (armor_chest_id != 0) comp->RemoveItemFromSlot(EQ::invslot::slotChest);
+		if (armor_head_id != 0)  comp->RemoveItemFromSlot(EQ::invslot::slotHead);
+	} else {
+		SkipTest("Regression/ACSum > Multi-slot load CalcBonuses test",
+			"No shield found; slotSecondary branch cannot be exercised");
+	}
+
+	// ---- Test 10.5: ACSum() is directly callable without crash ----
+	// ACSum() is what CalcAC() calls. Call it directly with and without items equipped
+	// to confirm the Companion branch works at every point.
+	int ac_no_gear = comp->ACSum();
+	RunTestGreaterThan("Regression/ACSum > ACSum() with no gear returns >= 0",
+		ac_no_gear, -1); // >= 0 (use -1 as threshold for RunTestGreaterThan)
+
+	if (shield_id != 0) {
+		comp->GiveItem(shield_id, EQ::invslot::slotSecondary);
+		// CalcItemBonuses must run first so itembonuses.AC is populated
+		comp->CalcBonuses();
+		int ac_with_shield = comp->ACSum();
+		RunTestGreaterThan("Regression/ACSum > ACSum() with shield equipped returns > 0",
+			ac_with_shield, 0);
+		comp->RemoveItemFromSlot(EQ::invslot::slotSecondary);
+	}
+
+	// ---- Test 10.6: Shield in slotSecondary + primary weapon, then CalcBonuses repeatedly ----
+	// The original bug manifested on every zone-in and on every CalcBonuses() call while
+	// the shield was equipped. Multiple calls must all be safe.
+	if (shield_id != 0 && weapon_id != 0) {
+		comp->GiveItem(weapon_id,  EQ::invslot::slotPrimary);
+		comp->GiveItem(shield_id,  EQ::invslot::slotSecondary);
+
+		// Three consecutive CalcBonuses calls — each traverses ACSum
+		comp->CalcBonuses();
+		comp->CalcBonuses();
+		comp->CalcBonuses();
+		RunTest("Regression/ACSum > Three consecutive CalcBonuses() calls with shield equipped do not crash",
+			true, true);
+
+		comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+		comp->RemoveItemFromSlot(EQ::invslot::slotSecondary);
+	} else {
+		SkipTest("Regression/ACSum > Repeated CalcBonuses with shield test",
+			"No shield or weapon found in items table");
+	}
+}
+
+// ============================================================
 // Entry Point
 // ============================================================
 
@@ -1039,10 +1228,13 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	TestCompanionWeaponDamagePath();
 	CleanupTestCompanions();
 
+	TestCompanionSouthRoRegressionACSum();
+	CleanupTestCompanions();
+
 	// Final DB cleanup
 	CleanupTestCompanionDB();
 
 	std::cout << "\n===========================================\n";
-	std::cout << "[✅] All Companion Tests Completed!\n";
+	std::cout << "[OK] All Companion Tests Completed!\n";
 	std::cout << "===========================================\n";
 }
