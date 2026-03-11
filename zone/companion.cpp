@@ -845,6 +845,80 @@ int64 Companion::CalcMaxHP()
 }
 
 // ============================================================
+// CalcMaxMana — Level-Scaled Mana Preservation (BUG-017 fix)
+// ============================================================
+
+// CalcMaxMana: preserves the level-scaled max_mana set by ScaleStatsToLevel().
+//
+// Without this override, NPC::CalcMaxMana() runs whenever CalcBonuses() is
+// called. It resets max_mana to either:
+//   - npc_mana + bonuses (when npc_mana != 0): ignores level scaling entirely
+//   - ((INT or WIS)/2 + 1) * level + bonuses (when npc_mana == 0): re-derives
+//     from current INT/WIS which was scaled, producing an inconsistent value
+//
+// This override reconstructs max_mana from the level-scaled base:
+//   scaled_base = m_base_mana * GetLevel() / m_recruited_level
+// Then adds item and spell mana bonuses on top. Non-caster classes get 0.
+//
+// This mirrors the CalcMaxHP() override pattern: we bypass the NPC formula
+// entirely and compute from the stored base values instead.
+//
+// Note: m_base_mana is the max_mana value at recruitment time (before any
+// scaling). m_recruited_level is the NPC level at recruitment. Both are set
+// by StoreBaseStats() during construction.
+int64 Companion::CalcMaxMana()
+{
+	// Non-caster companions have no mana pool.
+	if (!IsIntelligenceCasterClass() && !IsWisdomCasterClass()) {
+		max_mana = 0;
+		return 0;
+	}
+
+	// When npc_mana == 0, the NPC type stores no explicit mana value.
+	// NPC::CalcMaxMana() derives mana from the INT or WIS formula:
+	//   ((INT/2) + 1) * level + bonuses
+	// Since ScaleStatsToLevel() already scaled both INT/WIS and level,
+	// this formula scales proportionally — no fix is needed for this path.
+	// Fall through to the NPC formula in this case.
+	if (npc_mana == 0) {
+		return NPC::CalcMaxMana();
+	}
+
+	// When npc_mana != 0, NPC::CalcMaxMana() returns npc_mana + bonuses,
+	// ignoring the current level entirely. This is the broken path: after
+	// ScaleStatsToLevel() sets max_mana = m_base_mana * scale, CalcBonuses()
+	// calls NPC::CalcMaxMana() which resets max_mana to the unscaled npc_mana.
+	//
+	// Fix: reconstruct max_mana from the level-scaled base instead of npc_mana.
+
+	// Guard against division by zero (should never happen post-construction).
+	if (m_recruited_level == 0) {
+		max_mana = 0;
+		return 0;
+	}
+
+	// Reconstruct the level-scaled base mana from the stored recruitment values.
+	// Use float division to match ScaleStatsToLevel() precision.
+	float scale = static_cast<float>(GetLevel()) / static_cast<float>(m_recruited_level);
+	int64 scaled_base = static_cast<int64>(static_cast<float>(m_base_mana) * scale);
+
+	// Add item and spell mana bonuses (same as NPC::CalcMaxMana does for bonuses).
+	// aabonuses.Mana is always 0 for companions (no AAs).
+	max_mana = scaled_base + itembonuses.Mana + spellbonuses.Mana;
+
+	if (max_mana < 0) {
+		max_mana = 0;
+	}
+
+	// Clamp current_mana to the new max so we don't display > 100% mana.
+	if (current_mana > max_mana) {
+		current_mana = max_mana;
+	}
+
+	return max_mana;
+}
+
+// ============================================================
 // Resist Caps — Phase 5
 // ============================================================
 

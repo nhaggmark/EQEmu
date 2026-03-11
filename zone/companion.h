@@ -128,6 +128,14 @@ public:
 	// Companions::STAToHPFactor rule.
 	virtual int64 CalcMaxHP() override;
 
+	// CalcMaxMana preserves the level-scaled max_mana set by ScaleStatsToLevel().
+	// Without this override, NPC::CalcMaxMana() resets max_mana to npc_mana
+	// (the original recruited NPC's value), discarding the level-scaled result.
+	// This override reconstructs the level-scaled base from m_base_mana and
+	// adds item/spell mana bonuses on top. Non-caster classes return 0.
+	// (BUG-017 fix)
+	virtual int64 CalcMaxMana() override;
+
 	// -------------------------------------------------------
 	// Resist cap overrides — Phase 5
 	// -------------------------------------------------------
