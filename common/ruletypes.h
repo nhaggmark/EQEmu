@@ -1224,6 +1224,18 @@ RULE_INT(Companions, SittingRegenMult, 200,
 	"Phase 3: Sitting out-of-combat HP regen multiplier (percentage, 200 = 2x "
 	"standing OOC regen rate). Applies when companion is sitting and not engaged. "
 	"Stacks additively with the base OOC regen from Companions::OOCRegenPct.")
+RULE_INT(Companions, HealThresholdPct, 80,
+	"Phase 4: HP percentage below which companion healers begin healing in combat "
+	"(default 80). A value of 80 means healing triggers when any group member "
+	"drops below 80% HP during combat. Lower values mean healers are less proactive.")
+RULE_INT(Companions, ManaCutoffPct, 20,
+	"Phase 4: Mana percentage below which companion DPS casters stop nuking "
+	"(default 20). DPS casters (Wizard, Magician, Necromancer) reserve this "
+	"mana buffer for emergencies. Set to 0 to disable (cast until OOM).")
+RULE_INT(Companions, HealerManaConservePct, 30,
+	"Phase 4: Mana percentage below which healer companions switch to their "
+	"most mana-efficient heal spell (default 30). Above this threshold, healers "
+	"use their best/fastest heal. Below it, they use the cheapest available heal.")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

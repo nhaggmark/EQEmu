@@ -151,6 +151,48 @@ static uint16 SelectHealSpell(
 }
 
 // ============================================================
+// Internal helper: select the most mana-efficient healing spell
+// for a target at a given HP percentage.  Used when the caster
+// is low on mana (< HealerManaConservePct) to preserve resources.
+// Picks the valid heal spell with the lowest mana cost.
+// ============================================================
+static uint16 SelectEfficientHealSpell(
+	const std::vector<CompanionSpell>& spell_list,
+	uint8 companion_stance,
+	int8 target_hp_pct,
+	uint32 now_ms)
+{
+	auto candidates = GetSpellsForType(spell_list, SpellType_Heal, companion_stance);
+
+	uint16 best_spell = 0;
+	int    best_mana  = INT_MAX;
+
+	for (const auto& cs : candidates) {
+		if (cs.time_cancast > now_ms) {
+			continue; // on recast cooldown
+		}
+		// Check HP thresholds
+		if (cs.min_hp_pct > 0 && target_hp_pct > cs.min_hp_pct) {
+			continue;
+		}
+		if (cs.max_hp_pct > 0 && cs.max_hp_pct < 100 && target_hp_pct < cs.max_hp_pct) {
+			continue;
+		}
+		// Pick the one with the lowest mana cost
+		if (!IsValidSpell(cs.spellid)) {
+			continue;
+		}
+		int spell_mana = spells[cs.spellid].mana;
+		if (spell_mana < best_mana) {
+			best_mana  = spell_mana;
+			best_spell = cs.spellid;
+		}
+	}
+
+	return best_spell;
+}
+
+// ============================================================
 // Internal helper: select first available spell for a type,
 // respecting recast timers.
 // ============================================================
@@ -369,9 +411,11 @@ bool Companion::AI_HealGroupMember(bool engaged)
 		return false;
 	}
 
-	// Find most injured group member (owner prioritized, then tanks)
+	// Find most injured group member (owner prioritized, then tanks).
+	// When engaged, use the rule-configured threshold (default 80%).
+	// When idle/OOC, always heal below 99% (keep group topped off).
 	Mob* best_target = nullptr;
-	int8 lowest_hp   = engaged ? 90 : 99;
+	int8 lowest_hp   = engaged ? static_cast<int8>(RuleI(Companions, HealThresholdPct)) : 99;
 
 	Client* owner = GetCompanionOwner();
 
@@ -407,9 +451,22 @@ bool Companion::AI_HealGroupMember(bool engaged)
 		return false;
 	}
 
-	uint32 now_ms   = Timer::GetCurrentTime();
-	uint16 heal_spell = SelectHealSpell(
-		m_companion_spells, m_current_stance, lowest_hp, now_ms);
+	uint32 now_ms = Timer::GetCurrentTime();
+
+	// When mana is below HealerManaConservePct, use the most efficient heal
+	// spell to preserve resources. Above the threshold, use the best/fastest heal.
+	uint16 heal_spell = 0;
+	bool   mana_low   = (GetMaxMana() > 0 &&
+	                     GetManaRatio() < static_cast<float>(RuleI(Companions, HealerManaConservePct)));
+	if (mana_low) {
+		heal_spell = SelectEfficientHealSpell(
+			m_companion_spells, m_current_stance, lowest_hp, now_ms);
+	}
+	if (heal_spell == 0) {
+		// Fall back to standard heal selection (best priority spell)
+		heal_spell = SelectHealSpell(
+			m_companion_spells, m_current_stance, lowest_hp, now_ms);
+	}
 
 	if (heal_spell == 0) {
 		return false;
@@ -853,9 +910,11 @@ bool Companion::AI_Cleric(uint32 iSpellTypes, bool is_defensive)
 				return true;
 			}
 		}
-		// Buff if mana allows
-		if ((iSpellTypes & SpellType_Buff) && GetManaRatio() > 50.0f) {
-			if (AI_BuffGroupMember()) {
+		// Standard buffs (SpellType_Buff, SpellType_PreCombatBuff) are NOT cast
+		// during combat. Only SpellType_InCombatBuff is allowed in combat.
+		// (Pre-combat buffs are applied when idle; re-buffing waits until combat ends.)
+		if (iSpellTypes & SpellType_InCombatBuff) {
+			if (AI_InCombatBuff()) {
 				return true;
 			}
 		}
@@ -977,8 +1036,11 @@ bool Companion::AI_Shaman(uint32 iSpellTypes, bool is_defensive)
 	bool engaged = IsEngaged();
 
 	if (engaged) {
-		// Slow the target — shaman's most valuable contribution
-		if ((iSpellTypes & SpellType_Slow) && zone->random.Roll(70)) {
+		// Slow the target — shaman's most valuable contribution.
+		// Always attempt slow on the first opportunity (no random chance).
+		// The slow will only fire if a spell is available and the target
+		// is not immune.
+		if (iSpellTypes & SpellType_Slow) {
 			Mob* target = GetTarget();
 			if (target && !target->GetSpecialAbility(SpecialAbility::SlowImmunity)) {
 				if (AI_SlowDebuff(target)) {
@@ -998,8 +1060,9 @@ bool Companion::AI_Shaman(uint32 iSpellTypes, bool is_defensive)
 				return true;
 			}
 		}
-		// DoT when aggressive
-		if ((iSpellTypes & SpellType_DOT) && m_current_stance == COMPANION_STANCE_AGGRESSIVE) {
+		// DoT when aggressive and mana above cutoff
+		if ((iSpellTypes & SpellType_DOT) && m_current_stance == COMPANION_STANCE_AGGRESSIVE &&
+		    GetManaRatio() > static_cast<float>(RuleI(Companions, ManaCutoffPct))) {
 			if (AI_NukeTarget(SpellType_DOT)) {
 				return true;
 			}
@@ -1176,8 +1239,10 @@ bool Companion::AI_Wizard(uint32 iSpellTypes, bool is_defensive)
 				}
 			}
 		}
-		// Nuke: primary wizard role
-		if ((iSpellTypes & SpellType_Nuke) && GetManaRatio() > 15.0f) {
+		// Nuke: primary wizard role — stop nuking below ManaCutoffPct to preserve
+		// mana for emergencies (gate, emergency CC).
+		if ((iSpellTypes & SpellType_Nuke) &&
+		    GetManaRatio() > static_cast<float>(RuleI(Companions, ManaCutoffPct))) {
 			return AI_NukeTarget(SpellType_Nuke);
 		}
 	} else {
@@ -1244,20 +1309,23 @@ bool Companion::AI_Necromancer(uint32 iSpellTypes, bool is_defensive)
 	}
 
 	if (engaged) {
-		// DoTs are necro's main tool
-		if ((iSpellTypes & SpellType_DOT) && zone->random.Roll(70)) {
+		// DoTs are necro's main tool — stop when mana is low
+		if ((iSpellTypes & SpellType_DOT) && zone->random.Roll(70) &&
+		    GetManaRatio() > static_cast<float>(RuleI(Companions, ManaCutoffPct))) {
 			if (AI_NukeTarget(SpellType_DOT)) {
 				return true;
 			}
 		}
-		// Lifetap for self-sustain when low HP
+		// Lifetap for self-sustain when low HP (always allow regardless of mana,
+		// since lifetap restores HP and is critical for survival)
 		if ((iSpellTypes & SpellType_Lifetap) && GetHPRatio() < 60.0f) {
 			if (AI_NukeTarget(SpellType_Lifetap)) {
 				return true;
 			}
 		}
-		// Nuke (harm touch equivalent, magic missile)
-		if ((iSpellTypes & SpellType_Nuke) && zone->random.Roll(40)) {
+		// Direct nuke — stop nuking below ManaCutoffPct to reserve for DoTs/lifetap
+		if ((iSpellTypes & SpellType_Nuke) && zone->random.Roll(40) &&
+		    GetManaRatio() > static_cast<float>(RuleI(Companions, ManaCutoffPct))) {
 			return AI_NukeTarget(SpellType_Nuke);
 		}
 	} else {
