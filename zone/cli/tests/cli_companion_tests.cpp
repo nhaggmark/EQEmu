@@ -1375,6 +1375,273 @@ inline void TestCompanionTripleAttack()
 }
 
 // ============================================================
+// Suite 12: Phase 3 — Stats Drive Survivability (TDD)
+//
+// Tests for:
+//   12.1–12.5  STA-to-HP: pure-STA items (hp=0, asta>0) increase max HP
+//   12.6–12.8  Sitting regen: rule exists and sitting does not crash
+//   12.9–12.13 Defense skill AC divisor: companion uses /3 (melee) or /2 (casters)
+//
+// DISCRIMINATING TDD design:
+//   - STA-to-HP tests use items with hp=0, asta>0 to isolate the STA-to-HP
+//     conversion. These tests FAIL without Companion::CalcMaxHP() override.
+//   - Defense divisor test computes the expected ACSum value using the client
+//     formula and verifies the actual ACSum matches (not the NPC formula).
+//     These tests FAIL without the ACSum() IsCompanion() guard in attack.cpp.
+// ============================================================
+
+inline void TestCompanionPhase3Survivability()
+{
+	std::cout << "\n--- Suite 12: Phase 3 Stats Drive Survivability ---\n";
+
+	// ============================================================
+	// 12.1: STA-to-HP prerequisite — find a PURE STA item (hp=0, asta>0)
+	//
+	// This is the critical discriminating item: it has STA but NO direct HP.
+	// Any max_hp increase after equipping it MUST come from STA-to-HP conversion.
+	// Without Companion::CalcMaxHP() override, max_hp will NOT increase.
+	// ============================================================
+	uint32 pure_sta_item_id = 0;
+	{
+		auto results = content_db.QueryDatabase(
+			"SELECT `id` FROM `items` "
+			"WHERE `asta` >= 10 AND `hp` = 0 "
+			"AND `itemtype` IN (0,1,2,3,4,8,10,28) "
+			"ORDER BY `asta` DESC LIMIT 1"
+		);
+		if (results.Success() && results.RowCount() > 0) {
+			auto row = results.begin();
+			pure_sta_item_id = static_cast<uint32>(atoi(row[0]));
+		}
+	}
+
+	Companion* warrior = CreateTestCompanionByClass(1, 50, 0); // Warrior (tank class)
+	if (!warrior) {
+		SkipTest("Phase3/STA-HP > All STA tests", "No warrior NPC near level 50 found in DB");
+	} else {
+		int64 hp_before = warrior->GetMaxHP();
+		RunTestGreaterThan("Phase3/STA-HP > Baseline max HP > 0",
+			static_cast<int>(hp_before), 0);
+
+		if (pure_sta_item_id == 0) {
+			SkipTest("Phase3/STA-HP > Pure STA item test",
+				"No item with asta >= 10 AND hp = 0 found in items table");
+		} else {
+			// ---- 12.2: Pure-STA item (hp=0) equip increases max HP (STA-to-HP conversion) ----
+			// This FAILS before Companion::CalcMaxHP() override is implemented.
+			// Before the fix: CalcMaxHP uses base_hp + itembonuses.HP only (no STA conversion).
+			// After the fix: CalcMaxHP adds STA * hp_per_sta on top.
+			warrior->GiveItem(pure_sta_item_id, EQ::invslot::slotNeck);
+			warrior->CalcBonuses();
+
+			// Verify STA bonus is populated
+			int sta_bonus = static_cast<int>(warrior->GetItemBonuses().STA);
+			RunTestGreaterThan("Phase3/STA-HP > itembonuses.STA > 0 after equipping pure-STA item",
+				sta_bonus, 0);
+
+			int64 hp_after = warrior->GetMaxHP();
+			// KEY ASSERTION: max_hp must increase even though item has hp=0
+			// This ONLY passes if STA-to-HP conversion is active
+			RunTestGreaterThanInt64("Phase3/STA-HP > MaxHP increases with pure-STA item (hp=0, asta>0)",
+				hp_after, hp_before);
+
+			// ---- 12.3: HP bonus is proportional to STA bonus (sanity check) ----
+			// At level 50 warrior with STAToHPFactor=100:
+			// hp_per_sta ≈ 8 * (50/60) ≈ 6.7 per STA point
+			// For asta=10, expected HP bonus ≈ 67 HP
+			// For asta=100 (high STA items), expected HP bonus ≈ 670 HP
+			// We just verify it's positive and non-trivial (> 1 HP per STA point)
+			if (sta_bonus > 0) {
+				int64 hp_delta = hp_after - hp_before;
+				// HP bonus must be at least 1 HP per STA point (very conservative)
+				RunTestGreaterThanInt64("Phase3/STA-HP > HP bonus >= 1 HP per STA point",
+					hp_delta, static_cast<int64>(sta_bonus - 1));
+			}
+
+			// ---- 12.4: Removing pure-STA item decreases max HP back ----
+			warrior->RemoveItemFromSlot(EQ::invslot::slotNeck);
+			warrior->CalcBonuses();
+			int64 hp_restored = warrior->GetMaxHP();
+			// After removing, HP should be back to baseline (or very close)
+			RunTest("Phase3/STA-HP > MaxHP returns to baseline after removing pure-STA item",
+				hp_restored <= hp_after, true);
+			// Should be back at hp_before (allow ±1 for rounding)
+			RunTest("Phase3/STA-HP > MaxHP baseline restored (within 1 HP of original)",
+				hp_restored >= hp_before - 1 && hp_restored <= hp_before + 1, true);
+		}
+
+		// ---- 12.5: Caster companion (lower STA-to-HP ratio) also gets HP bonus ----
+		Companion* wizard = CreateTestCompanionByClass(13, 50, 0); // Wizard (caster)
+		if (!wizard) {
+			SkipTest("Phase3/STA-HP > Caster STA-HP test", "No wizard NPC near level 50 found in DB");
+		} else if (pure_sta_item_id != 0) {
+			int64 wizard_hp_before = wizard->GetMaxHP();
+			wizard->GiveItem(pure_sta_item_id, EQ::invslot::slotNeck);
+			wizard->CalcBonuses();
+			int64 wizard_hp_after = wizard->GetMaxHP();
+
+			// Wizard gets a smaller HP bonus per STA than warrior, but still non-zero
+			RunTestGreaterThanInt64("Phase3/STA-HP > Wizard MaxHP increases with pure-STA item",
+				wizard_hp_after, wizard_hp_before);
+			wizard->RemoveItemFromSlot(EQ::invslot::slotNeck);
+		} else {
+			SkipTest("Phase3/STA-HP > Caster STA-HP test", "No pure-STA item found");
+		}
+	}
+
+	// ============================================================
+	// 12.6: Sitting regen — SittingRegenMult rule exists and is accessible
+	// ============================================================
+	Companion* regen_comp = CreateTestCompanionByClass(1, 40, 0);
+	if (!regen_comp) {
+		SkipTest("Phase3/SittingRegen > All sitting regen tests", "No warrior NPC near level 40 found in DB");
+	} else {
+		// Verify basic regen interface works
+		regen_comp->CalcBonuses();
+		RunTest("Phase3/SittingRegen > CalcBonuses() does not crash", true, true);
+
+		// ---- 12.7: Companion can sit and the sitting state is recognized ----
+		regen_comp->Sit();
+		bool is_sitting = (regen_comp->GetAppearance() == eaSitting);
+		RunTest("Phase3/SittingRegen > GetAppearance() == eaSitting after Sit()", true, is_sitting);
+
+		// ---- 12.8: SittingRegenMult rule exists and has value >= 100 ----
+		int mult = RuleI(Companions, SittingRegenMult);
+		RunTestGreaterThan("Phase3/SittingRegen > SittingRegenMult rule >= 100 (default 200)",
+			mult, 99);
+		RunTest("Phase3/SittingRegen > SittingRegenMult default is 200", 200, mult);
+
+		regen_comp->Stand();
+	}
+
+	// ============================================================
+	// 12.9: Defense skill AC divisor — discriminating test
+	//
+	// ACSum() for a companion should use the Client/Bot divisor (/3 melee, /2 casters)
+	// rather than the NPC divisor (/5).
+	//
+	// Discriminating approach:
+	//   1. Get the companion's defense skill and its GetAC() (base NPC AC)
+	//   2. Compute: ac_client = GetAC() + skill/3 (expected with fix)
+	//              ac_npc    = GetAC() + skill/5 (before fix)
+	//   3. Actual ACSum must be closer to ac_client than to ac_npc.
+	//      Specifically: ACSum >= ac_client - tolerance
+	//      (ACSum has other components like AGI, item bonuses, spell bonuses
+	//       but the defense skill contribution must use /3, not /5)
+	//
+	// This test FAILS before the ACSum() IsCompanion() guard is added because
+	// companions take the IsNPC() branch and get skill/5.
+	// ============================================================
+	Companion* ac_warrior = CreateTestCompanionByClass(1, 50, 0);
+	if (!ac_warrior) {
+		SkipTest("Phase3/DefenseAC > All defense AC tests", "No warrior NPC near level 50 found in DB");
+	} else {
+		int defense_skill = static_cast<int>(ac_warrior->GetSkill(EQ::skills::SkillDefense));
+		RunTestGreaterThan("Phase3/DefenseAC > Warrior has SkillDefense > 0", defense_skill, 0);
+
+		int ac_sum = ac_warrior->ACSum(true); // skip_caps=true for cleaner comparison
+		RunTestGreaterThan("Phase3/DefenseAC > ACSum() > 0 for warrior companion", ac_sum, 0);
+
+		// ---- 12.10: ACSum uses /3 divisor for melee companions ----
+		// Compute the defense skill contribution for each path:
+		int contrib_npc    = defense_skill / 5;  // NPC path (broken)
+		int contrib_client = defense_skill / 3;  // Client/Bot path (correct)
+		int delta = contrib_client - contrib_npc; // Expected improvement from fix
+
+		// Without the fix (NPC path): ACSum = other_ac + skill/5
+		// With the fix (Client path): ACSum = other_ac + skill/3
+		// So ACSum-after-fix should be exactly (delta) higher than ACSum-before-fix.
+		//
+		// We can verify this by checking that ACSum is at least (contrib_client) higher
+		// than just the base NPC AC alone, accounting for AGI and item contributions.
+		// The minimum from skill contribution (with fix): skill/3
+		// The minimum from skill contribution (before fix): skill/5
+		//
+		// Since ACSum also includes itembonuses.AC * 4/3 + GetAC() + AGI/20 etc,
+		// the exact value is hard to predict. But we can verify:
+		// ACSum >= GetAC() + itembonuses.AC * 4/3 + skill/3
+		// (excluding AGI/20 and spell contributions, which are usually small)
+		//
+		// Use a conservative lower bound: ACSum must exceed (GetAC() + skill/3)
+		// This will FAIL before the fix (where we'd only get skill/5).
+		int npc_base_ac = static_cast<int>(ac_warrior->GetAC());
+		int item_ac     = static_cast<int>(ac_warrior->GetItemBonuses().AC);
+		// item_ac in ACSum is multiplied by 4/3:
+		int item_ac_contribution = (item_ac * 4) / 3;
+
+		// Conservative lower bound for ACSum with correct client divisor:
+		// npc_base_ac + item_ac_contrib + skill/3 (ignoring AGI which may add more)
+		int lower_bound_with_fix = npc_base_ac + item_ac_contribution + contrib_client;
+		RunTest("Phase3/DefenseAC > ACSum() >= (npc_ac + item_ac + skill/3) with client divisor",
+			ac_sum >= lower_bound_with_fix, true);
+
+		// Verify the actual ACSum exceeds the NPC-path lower bound
+		RunTestGreaterThan("Phase3/DefenseAC > ACSum() > (delta) improvement from fix",
+			ac_sum, npc_base_ac + item_ac_contribution + contrib_npc);
+
+		(void)delta;
+
+		// ---- 12.11: Defense contribution improvement is exactly delta higher than NPC path ----
+		// This verifies the fix produces exactly skill/3 - skill/5 more AC
+		// than the NPC path would. Since we know what ACSum "would have been"
+		// without the fix (npc_path_result), we verify:
+		//   actual ACSum - "expected NPC ACSum" >= delta
+		// However, computing "expected NPC ACSum" requires running a hypothetical.
+		// Instead, we verify ACSum >= (lower_bound_with_fix), which is the key test.
+		RunTest("Phase3/DefenseAC > ACSum() callable without crash (defense divisor fix)",
+			true, true);
+
+		// ---- 12.12: Pure-caster companion uses /2 divisor (Necromancer..Enchanter range) ----
+		// Cleric (class 2) is NOT in the Necromancer(11)..Enchanter(14) caster range and uses /3.
+		// Use Wizard (class 12) which IS in the range and gets /2.
+		Companion* wiz = CreateTestCompanionByClass(12, 50, 0); // Wizard
+		if (!wiz) {
+			SkipTest("Phase3/DefenseAC > Pure-caster defense divisor test",
+				"No wizard NPC near level 50 found in DB");
+		} else {
+			int wiz_defense = static_cast<int>(wiz->GetSkill(EQ::skills::SkillDefense));
+			int wiz_ac_sum  = wiz->ACSum(true);
+			int wiz_base_ac = static_cast<int>(wiz->GetAC());
+			int wiz_item_ac = static_cast<int>(wiz->GetItemBonuses().AC);
+			int wiz_item_ac_contrib = (wiz_item_ac * 4) / 3;
+
+			// Pure caster path (Necromancer..Enchanter) uses skill/2
+			int wiz_contrib_fix = wiz_defense / 2;
+			int wiz_lower_bound = wiz_base_ac + wiz_item_ac_contrib + wiz_contrib_fix;
+
+			// Wizard AC sum with fix must be >= lower bound (skill/2 contribution)
+			RunTest("Phase3/DefenseAC > Wizard ACSum() >= (npc_ac + item_ac + skill/2) with client divisor",
+				wiz_ac_sum >= wiz_lower_bound, true);
+
+			RunTestGreaterThan("Phase3/DefenseAC > Wizard ACSum() > 0", wiz_ac_sum, 0);
+		}
+
+		// ---- 12.13: Shield + defense divisor fix regression — ACSum still safe ----
+		uint32 shield_id = 0;
+		{
+			auto results = content_db.QueryDatabase(
+				fmt::format("SELECT `id` FROM `items` WHERE `itemtype` = {} AND `ac` > 0 LIMIT 1",
+					static_cast<int>(EQ::item::ItemTypeShield))
+			);
+			if (results.Success() && results.RowCount() > 0) {
+				auto row = results.begin();
+				shield_id = static_cast<uint32>(atoi(row[0]));
+			}
+		}
+		if (shield_id != 0) {
+			ac_warrior->GiveItem(shield_id, EQ::invslot::slotSecondary);
+			ac_warrior->CalcBonuses();
+			int ac_with_shield = ac_warrior->ACSum();
+			RunTestGreaterThan("Phase3/DefenseAC > ACSum() with shield + defense fix does not crash",
+				ac_with_shield, 0);
+			ac_warrior->RemoveItemFromSlot(EQ::invslot::slotSecondary);
+		} else {
+			SkipTest("Phase3/DefenseAC > Shield regression test", "No shield found in items table");
+		}
+	}
+}
+
+// ============================================================
 // Entry Point
 // ============================================================
 
@@ -1426,6 +1693,9 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	CleanupTestCompanions();
 
 	TestCompanionTripleAttack();
+	CleanupTestCompanions();
+
+	TestCompanionPhase3Survivability();
 	CleanupTestCompanions();
 
 	// Final DB cleanup

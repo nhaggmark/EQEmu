@@ -753,6 +753,97 @@ void Companion::SetAttackTimer()
 }
 
 // ============================================================
+// CalcMaxHP — STA-to-HP Conversion (Phase 3)
+// ============================================================
+
+// CalcMaxHP: adds STA-based HP bonus on top of the standard NPC max HP.
+//
+// The NPC base formula (Mob::CalcMaxHP) already includes:
+//   max_hp = base_hp (from npc_types.max_hp) + itembonuses.HP
+//
+// Base HP from npc_types already accounts for the NPC's inherent STA
+// (the NPC was designed with some STA and that's baked into max_hp).
+// We must NOT convert the base STA again — that would double-count.
+//
+// What we DO convert: bonus STA from equipped items (itembonuses.STA)
+// and spell buffs (spellbonuses.STA). These are the stats gear/spells
+// actually add, and they should translate to HP just as they do for players.
+//
+// HP-per-STA-point at level 60:
+//   Tanks (Warrior, Paladin, Shadow Knight): 8 HP/STA
+//   Melee DPS (Monk, Ranger, Bard, Rogue, Beastlord, Berserker): 5 HP/STA
+//   Priest (Cleric, Druid, Shaman): 4 HP/STA
+//   Caster DPS (Wizard, Magician, Necromancer, Enchanter): 3 HP/STA
+//
+// The values scale linearly with level (level/60). For example, a level 30
+// warrior gets 4 HP/STA (8 * 30/60 = 4). This avoids overvaluing STA gear
+// on low-level companions.
+//
+// The Companions::STAToHPFactor rule (default 100) scales the entire formula
+// as a percentage — set to 50 to halve the STA-to-HP conversion if needed.
+int64 Companion::CalcMaxHP()
+{
+	// Call the NPC/Mob base to populate max_hp with base_hp + itembonuses.HP
+	// and apply PercentMaxHPChange / FlatMaxHPChange bonuses.
+	int64 base = Mob::CalcMaxHP();
+
+	// Only apply STA-to-HP if the rule is set to a positive factor.
+	int factor = RuleI(Companions, STAToHPFactor);
+	if (factor <= 0) {
+		return base;
+	}
+
+	// Bonus STA from equipped items and spells only.
+	// aabonuses.STA is always 0 for companions (no AAs).
+	int bonus_sta = static_cast<int>(itembonuses.STA) + static_cast<int>(spellbonuses.STA);
+	if (bonus_sta <= 0) {
+		return base;
+	}
+
+	// HP-per-STA base value at level 60 by class archetype.
+	// These match the approximate per-class values from the Client's CalcBaseHP() formula.
+	int hp_per_sta_at_60 = 3; // default: caster DPS
+	switch (GetClass()) {
+		case Class::Warrior:
+		case Class::Paladin:
+		case Class::ShadowKnight:
+			hp_per_sta_at_60 = 8;
+			break;
+		case Class::Monk:
+		case Class::Ranger:
+		case Class::Bard:
+		case Class::Rogue:
+		case Class::Beastlord:
+		case Class::Berserker:
+			hp_per_sta_at_60 = 5;
+			break;
+		case Class::Cleric:
+		case Class::Druid:
+		case Class::Shaman:
+			hp_per_sta_at_60 = 4;
+			break;
+		// Wizard, Magician, Necromancer, Enchanter: default 3
+		default:
+			hp_per_sta_at_60 = 3;
+			break;
+	}
+
+	// Scale HP-per-STA linearly with level (capped at 60 for progression purposes).
+	// A level 30 warrior gets 8 * 30/60 = 4 HP/STA, not 8.
+	int level = static_cast<int>(GetLevel());
+	int cap_level = std::min(level, 60);
+
+	// Compute HP bonus: bonus_sta * hp_per_sta * level/60 * factor/100
+	// Use integer arithmetic with care to avoid truncation to zero.
+	// Order: multiply first, divide last.
+	int64 hp_bonus = static_cast<int64>(bonus_sta) * hp_per_sta_at_60 * cap_level * factor;
+	hp_bonus /= 6000; // (60 levels * 100 factor)
+
+	max_hp = base + hp_bonus;
+	return max_hp;
+}
+
+// ============================================================
 // Triple Attack — Phase 2
 // ============================================================
 
@@ -1457,6 +1548,34 @@ bool Companion::Process()
 				if (CheckDualWield()) {
 					DoAttackRounds(atk_target, EQ::invslot::slotSecondary);
 					TriggerDefensiveProcs(atk_target, EQ::invslot::slotSecondary, false);
+				}
+			}
+		}
+	}
+
+	// Sitting HP regen bonus (Phase 3):
+	// NPC::Process() regen code adds only 3 HP/tick for sitting (npc_sitting_regen_bonus).
+	// For companions, we want 2-3x the OOC regen rate when sitting and out of combat.
+	// We apply an additive sitting bonus BEFORE NPC::Process() runs, so the total
+	// regen for a sitting OOC companion is:
+	//   NPC::Process() OOC regen  (max(hp_regen, ooc_regen_calc) + 3)
+	//   + sitting bonus (base_ooc * (SittingRegenMult - 100) / 100)
+	//
+	// At SittingRegenMult=200 (2x): sitting bonus equals the base OOC regen,
+	// so total sitting regen = 2x the standing OOC regen rate.
+	//
+	// Conditions: must be sitting, not engaged, and have HP to recover.
+	if (IsSitting() && !IsEngaged() && GetHP() < GetMaxHP()) {
+		int mult = RuleI(Companions, SittingRegenMult);
+		if (mult > 100) {
+			// Compute the OOC regen amount NPC::Process would apply
+			int ooc_pct = RuleI(Companions, OOCRegenPct);
+			if (ooc_pct > 0) {
+				int64 base_ooc = (GetMaxHP() * ooc_pct) / 100;
+				// Additive bonus beyond the base OOC regen
+				int64 sitting_bonus = (base_ooc * (mult - 100)) / 100;
+				if (sitting_bonus > 0) {
+					SetHP(std::min(GetHP() + sitting_bonus, GetMaxHP()));
 				}
 			}
 		}

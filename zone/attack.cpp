@@ -925,11 +925,22 @@ int Mob::ACSum(bool skip_caps)
 		ac += GetAC();
 		ac += GetPetACBonusFromOwner();
 		auto spell_aa_ac = aabonuses.AC + spellbonuses.AC;
-		ac += GetSkill(EQ::skills::SkillDefense) / 5;
-		if (EQ::ValueWithin(static_cast<int>(GetClass()), Class::Necromancer, Class::Enchanter))
-			ac += spell_aa_ac / 3;
-		else
-			ac += spell_aa_ac / 4;
+		// Phase 3: Companions use the Client/Bot defense skill divisor (/3 for melee,
+		// /2 for casters) instead of the NPC divisor (/5). Companions return IsNPC()=true
+		// but should fight like player characters, so they get the better AC calculation.
+		// Regular NPCs continue to use the /5 divisor.
+		if (IsCompanion()) {
+			if (EQ::ValueWithin(static_cast<int>(GetClass()), Class::Necromancer, Class::Enchanter))
+				ac += GetSkill(EQ::skills::SkillDefense) / 2 + spell_aa_ac / 3;
+			else
+				ac += GetSkill(EQ::skills::SkillDefense) / 3 + spell_aa_ac / 4;
+		} else {
+			ac += GetSkill(EQ::skills::SkillDefense) / 5;
+			if (EQ::ValueWithin(static_cast<int>(GetClass()), Class::Necromancer, Class::Enchanter))
+				ac += spell_aa_ac / 3;
+			else
+				ac += spell_aa_ac / 4;
+		}
 	}
 	else { // TODO: so we can't set NPC skills ... so the skill bonus ends up being HUGE so lets nerf them a bit
 		auto spell_aa_ac = aabonuses.AC + spellbonuses.AC;

@@ -1216,6 +1216,14 @@ RULE_BOOL(Companions, UseWeaponDamage, true,
 	"When true, companions use equipped weapon damage and delay instead of "
 	"npc_types.max_dmg and attack_delay. When false, weapons remain cosmetic "
 	"for base damage (procs and bane still work).")
+RULE_INT(Companions, STAToHPFactor, 100,
+	"Phase 3: Percentage multiplier on the STA-to-HP conversion for companions "
+	"(100 = full conversion, 50 = half). Only bonus STA from items and spells "
+	"contributes — base NPC STA is already reflected in npc_types.max_hp.")
+RULE_INT(Companions, SittingRegenMult, 200,
+	"Phase 3: Sitting out-of-combat HP regen multiplier (percentage, 200 = 2x "
+	"standing OOC regen rate). Applies when companion is sitting and not engaged. "
+	"Stacks additively with the base OOC regen from Companions::OOCRegenPct.")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

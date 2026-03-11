@@ -118,6 +118,16 @@ public:
 	virtual void SetAttackTimer() override;
 
 	// -------------------------------------------------------
+	// Stat overrides — survivability path (Phase 3)
+	// -------------------------------------------------------
+	// CalcMaxHP adds STA-to-HP conversion on top of the NPC base calculation.
+	// Only bonus STA from items and spells contributes — base NPC STA is already
+	// reflected in npc_types.max_hp and must not be double-counted.
+	// The conversion factor is scaled by level, class archetype, and the
+	// Companions::STAToHPFactor rule.
+	virtual int64 CalcMaxHP() override;
+
+	// -------------------------------------------------------
 	// Combat overrides — triple attack (Phase 2)
 	// -------------------------------------------------------
 	// Returns true when this companion's class and level qualify
