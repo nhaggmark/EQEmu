@@ -1212,6 +1212,10 @@ RULE_BOOL(Companions, CompanionFleeEnabled, false, "Whether companions retain NP
 RULE_INT(Companions, FormationDistance, 15, "Distance in game units that companions follow behind the player in formation")
 RULE_INT(Companions, CasterCombatRange, 70, "Distance in game units that caster/healer companions maintain from targets in combat (0 = use default melee behavior)")
 RULE_BOOL(Companions, RogueBehindMob, true, "Whether rogue companions attempt to position behind their target to enable backstab")
+RULE_BOOL(Companions, UseWeaponDamage, true,
+	"When true, companions use equipped weapon damage and delay instead of "
+	"npc_types.max_dmg and attack_delay. When false, weapons remain cosmetic "
+	"for base damage (procs and bane still work).")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

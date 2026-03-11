@@ -113,6 +113,11 @@ public:
 	virtual bool IsOfClientBotMerc() const override { return true; }
 
 	// -------------------------------------------------------
+	// Combat overrides — weapon-damage path (Phase 1)
+	// -------------------------------------------------------
+	virtual void SetAttackTimer() override;
+
+	// -------------------------------------------------------
 	// AI Virtual Overrides
 	// -------------------------------------------------------
 	virtual void AI_Start(uint32 iMoveDelay = 0) override;

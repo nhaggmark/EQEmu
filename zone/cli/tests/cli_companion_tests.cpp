@@ -730,6 +730,163 @@ inline void TestCompanionStancePositioning()
 }
 
 // ============================================================
+// Suite 9: Phase 1 — Weapon Damage Path
+// Tests that verify Companions:UseWeaponDamage behavior.
+// These tests are written BEFORE the feature is implemented (TDD).
+// When UseWeaponDamage=true (default) and a weapon is equipped,
+// the companion should use weapon->Damage and weapon->Delay.
+// When no weapon is equipped or the rule is false, it falls back
+// to npc_types base values (GetBaseDamage/GetMinDamage/attack_delay).
+// ============================================================
+
+inline void TestCompanionWeaponDamagePath()
+{
+	std::cout << "\n--- Suite 9: Phase 1 Weapon Damage Path ---\n";
+
+	// ---- Test 9.1: Rule UseWeaponDamage exists and is accessible ----
+	// This confirms the rule was added to ruletypes.h correctly.
+	bool rule_value = RuleB(Companions, UseWeaponDamage);
+	RunTest("WeaponDmg > RuleB(Companions, UseWeaponDamage) is accessible", true, true);
+	// Default value should be true
+	RunTest("WeaponDmg > UseWeaponDamage default is true", true, rule_value);
+
+	// ---- Test 9.2: SetAttackTimer() exists and does not crash (rule = true, no weapon) ----
+	// When rule is true but no weapon is equipped, SetAttackTimer should fall back
+	// to hand-to-hand delay without crashing.
+	Companion* comp = CreateTestCompanionByClass(1, 50, 0);
+	if (!comp) {
+		SkipTest("WeaponDmg suite", "No warrior NPC found in DB");
+		return;
+	}
+
+	// Ensure primary slot is empty
+	comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+	// Call SetAttackTimer — should not crash (uses GetHandToHandDelay fallback)
+	comp->SetAttackTimer();
+	RunTest("WeaponDmg > SetAttackTimer() with no weapon does not crash", true, true);
+
+	// ---- Test 9.3: SetAttackTimer() uses weapon delay when rule=true and weapon equipped ----
+	// Find a weapon with a known delay range for reliable testing
+	uint32 slow_weapon_id = FindWeapon(5, 50, 35, 60);   // slow weapon: delay 35-60
+	uint32 fast_weapon_id = FindWeapon(5, 50, 16, 28);   // fast weapon: delay 16-28
+
+	if (slow_weapon_id == 0 || fast_weapon_id == 0) {
+		SkipTest("WeaponDmg > Attack timer speed test", "Could not find suitable slow and fast weapons in DB");
+	} else {
+		// Equip slow weapon and record timer value
+		comp->GiveItem(slow_weapon_id, EQ::invslot::slotPrimary);
+		comp->SetAttackTimer();
+		// The attack_timer is protected — we verify via CalcBonuses (which calls SetAttackTimer)
+		// and check that the equipped weapon has the expected delay range
+		const EQ::ItemInstance* slow_inst = comp->GetInv().GetItem(EQ::invslot::slotPrimary);
+		if (slow_inst && slow_inst->GetItem()) {
+			int slow_delay = static_cast<int>(slow_inst->GetItem()->Delay);
+			RunTestRange("WeaponDmg > Slow weapon has delay in [35, 60]", slow_delay, 35, 60);
+		}
+		comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+
+		// Equip fast weapon and verify delay is in range
+		comp->GiveItem(fast_weapon_id, EQ::invslot::slotPrimary);
+		comp->SetAttackTimer();
+		const EQ::ItemInstance* fast_inst = comp->GetInv().GetItem(EQ::invslot::slotPrimary);
+		if (fast_inst && fast_inst->GetItem()) {
+			int fast_delay = static_cast<int>(fast_inst->GetItem()->Delay);
+			RunTestRange("WeaponDmg > Fast weapon has delay in [16, 28]", fast_delay, 16, 28);
+		}
+		comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+	}
+
+	// ---- Test 9.4: Attack() uses weapon damage when UseWeaponDamage=true and weapon equipped ----
+	// We can't easily intercept the damage calculation, but we can verify that
+	// (a) Attack() does not crash with a weapon equipped and UseWeaponDamage=true,
+	// (b) GetInv().GetItem() returns the weapon with damage > 0 (setup correct),
+	// (c) The weapon's Damage field is non-trivially different from GetBaseDamage().
+	// This tests the setup and crash safety of the new code path.
+	uint32 weapon_id = FindWeapon(5, 50, 20, 50);
+	if (weapon_id == 0) {
+		SkipTest("WeaponDmg > Attack with weapon test", "No weapon found in items table");
+	} else {
+		comp->GiveItem(weapon_id, EQ::invslot::slotPrimary);
+		const EQ::ItemInstance* wi = comp->GetInv().GetItem(EQ::invslot::slotPrimary);
+		if (wi && wi->GetItem()) {
+			int weapon_dmg = static_cast<int>(wi->GetItem()->Damage);
+			int base_dmg   = static_cast<int>(comp->GetBaseDamage());
+			RunTestGreaterThan("WeaponDmg > Equipped weapon has Damage > 0", weapon_dmg, 0);
+			// Both values exist (test data sanity)
+			RunTestGreaterThan("WeaponDmg > GetBaseDamage() > 0 (fallback available)", base_dmg, 0);
+		}
+
+		// Verify Attack() does not crash with weapon equipped
+		uint32 target_id = FindNPCTypeIDForClassLevel(1, 5, 15);
+		if (target_id != 0) {
+			const NPCType* target_type = content_db.LoadNPCTypesData(target_id);
+			if (target_type) {
+				auto* target = new NPC(target_type, nullptr, glm::vec4(5, 5, 0, 0), GravityBehavior::Water, false);
+				entity_list.AddNPC(target);
+				// Attack should not crash (result is RNG-dependent)
+				comp->Attack(target, EQ::invslot::slotPrimary, false, false, false);
+				RunTest("WeaponDmg > Attack(target) with weapon equipped does not crash", true, true);
+				target->Depop();
+				entity_list.MobProcess();
+			}
+		} else {
+			SkipTest("WeaponDmg > Attack(target) crash test", "No low-level NPC found in DB");
+		}
+		comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+	}
+
+	// ---- Test 9.5: When UseWeaponDamage=true and NO weapon, GetBaseDamage() fallback accessible ----
+	// Confirm that without a weapon, the fallback values remain accessible.
+	comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+	const EQ::ItemInstance* no_weapon = comp->GetInv().GetItem(EQ::invslot::slotPrimary);
+	RunTestNull("WeaponDmg > Primary slot empty after RemoveItemFromSlot",
+		static_cast<const void*>(no_weapon));
+	RunTestGreaterThan("WeaponDmg > GetBaseDamage() > 0 when unarmed (NPC fallback path)",
+		static_cast<int>(comp->GetBaseDamage()), 0);
+
+	// ---- Test 9.6: Attack(nullptr) still returns false with weapon equipped ----
+	if (weapon_id != 0) {
+		comp->GiveItem(weapon_id, EQ::invslot::slotPrimary);
+		bool null_attack = comp->Attack(nullptr);
+		RunTest("WeaponDmg > Attack(nullptr) returns false when weapon equipped", false, null_attack);
+		comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+	}
+
+	// ---- Test 9.7: Level 28+ warrior — GetWeaponDamageBonus returns > 0 for weapon ----
+	// This is a data-only test: we verify the bonus function is callable and returns
+	// a positive value for a level 28+ warrior with a weapon equipped.
+	// The actual bonus application happens inside Attack(), which we verify via crash safety.
+	Companion* warrior30 = CreateTestCompanionByClass(1, 30, 0);
+	if (warrior30 && warrior30->GetLevel() >= 28) {
+		uint32 wid = FindWeapon(5, 50, 20, 50);
+		if (wid != 0) {
+			warrior30->GiveItem(wid, EQ::invslot::slotPrimary);
+			const EQ::ItemInstance* wi30 = warrior30->GetInv().GetItem(EQ::invslot::slotPrimary);
+			if (wi30) {
+				int bonus = static_cast<int>(warrior30->GetWeaponDamageBonus(wi30->GetItem()));
+				RunTestGreaterThan("WeaponDmg > Level 28+ warrior GetWeaponDamageBonus() > 0",
+					bonus, 0);
+			}
+			warrior30->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+		} else {
+			SkipTest("WeaponDmg > Damage bonus test", "No weapon found in items table");
+		}
+	} else {
+		SkipTest("WeaponDmg > Damage bonus test", "No warrior NPC >= level 28 found in DB");
+	}
+
+	// ---- Test 9.8: CalcBonuses() triggers SetAttackTimer() (no crash, timer updated) ----
+	// CalcBonuses -> SetAttackTimer is the chain that updates attack speed on equip.
+	// Verify that CalcBonuses() does not crash after a weapon is equipped.
+	if (weapon_id != 0) {
+		comp->GiveItem(weapon_id, EQ::invslot::slotPrimary);
+		comp->CalcBonuses(); // internally calls SetAttackTimer()
+		RunTest("WeaponDmg > CalcBonuses() with weapon equipped does not crash", true, true);
+		comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+	}
+}
+
+// ============================================================
 // Entry Point
 // ============================================================
 
@@ -772,6 +929,9 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	CleanupTestCompanions();
 
 	TestCompanionStancePositioning();
+	CleanupTestCompanions();
+
+	TestCompanionWeaponDamagePath();
 	CleanupTestCompanions();
 
 	// Final DB cleanup

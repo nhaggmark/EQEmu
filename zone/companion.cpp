@@ -465,7 +465,288 @@ bool Companion::Attack(Mob* other, int Hand, bool FromRiposte, bool IsStrikethro
 		}
 	}
 
-	return NPC::Attack(other, Hand, FromRiposte, IsStrikethrough, IsFromSpell, opts);
+	// -------------------------------------------------------
+	// Phase 1 — Weapon Damage Path
+	// When UseWeaponDamage is true and a weapon is equipped in
+	// the attack hand, use the weapon's damage values instead of
+	// the npc_types base damage (GetBaseDamage / GetMinDamage).
+	// If the rule is false, or no weapon is in the slot, fall
+	// through to NPC::Attack() which uses the NPC base damage.
+	// -------------------------------------------------------
+	if (!RuleB(Companions, UseWeaponDamage)) {
+		return NPC::Attack(other, Hand, FromRiposte, IsStrikethrough, IsFromSpell, opts);
+	}
+
+	// Retrieve the equipped weapon from the inventory profile.
+	// Companions populate GetInv() via GiveItem()/LoadEquipment().
+	// NPCs use equipment[] + database.GetItem() instead; we must use GetInv() here.
+	const EQ::ItemInstance* weapon_inst = nullptr;
+	if (Hand == EQ::invslot::slotSecondary) {
+		weapon_inst = GetInv().GetItem(EQ::invslot::slotSecondary);
+	} else {
+		weapon_inst = GetInv().GetItem(EQ::invslot::slotPrimary);
+	}
+
+	// If no weapon is equipped (or item is not a weapon), fall back to NPC path.
+	if (!weapon_inst || !weapon_inst->IsWeapon()) {
+		return NPC::Attack(other, Hand, FromRiposte, IsStrikethrough, IsFromSpell, opts);
+	}
+
+	// --- Weapon-damage attack path (mirrors NPC::Attack but uses weapon->Damage) ---
+
+	if (DivineAura()) {
+		return false;
+	}
+
+	if (!GetTarget()) {
+		SetTarget(other);
+	}
+
+	if (!IsAttackAllowed(other)) {
+		RemoveFromHateList(other);
+		RemoveFromRampageList(other);
+		return false;
+	}
+
+	FaceTarget(GetTarget());
+
+	const EQ::ItemData* weapon = weapon_inst->GetItem();
+
+	if (Hand == EQ::invslot::slotSecondary) {
+		// Secondary hand only accepts 1H weapons
+		if (!weapon->IsType1HWeapon()) {
+			return false;
+		}
+		OffHandAtk(true);
+	} else {
+		OffHandAtk(false);
+	}
+
+	DamageHitInfo my_hit;
+	my_hit.hand         = Hand;
+	my_hit.damage_done  = 1;
+	my_hit.min_damage   = 0;
+
+	// Determine skill and send attack animation (Client-style: pass ItemInstance*).
+	// AttackAnimation sends the weapon swing packet to nearby clients and derives
+	// the skill type from the item type (1H slash, 2H blunt, etc.).
+	my_hit.skill = AttackAnimation(Hand, weapon_inst);
+
+	// Base damage from weapon via the shared GetWeaponDamage path (Client/Bot overload).
+	// This reads weapon->Damage and applies immunity checks for the target.
+	int64 hate = weapon->Damage + weapon->ElemDmgAmt;
+	my_hit.base_damage = GetWeaponDamage(other, weapon_inst, &hate);
+
+	if (hate == 0 && my_hit.base_damage > 1) {
+		hate = my_hit.base_damage;
+	}
+
+	if (my_hit.base_damage > 0) {
+		// Apply damage caps (same as Client path: attack.cpp:1649-1650)
+		if (Hand == EQ::invslot::slotPrimary || Hand == EQ::invslot::slotSecondary) {
+			my_hit.base_damage = DoDamageCaps(my_hit.base_damage);
+		}
+
+		// Bane and elemental damage (same logic as NPC::Attack, attack.cpp:2332-2353)
+		int eleBane = 0;
+		if (RuleB(NPC, UseBaneDamage)) {
+			if (weapon->BaneDmgBody == other->GetBodyType()) {
+				eleBane += weapon->BaneDmgAmt;
+			}
+			if (weapon->BaneDmgRace == other->GetRace()) {
+				eleBane += weapon->BaneDmgRaceAmt;
+			}
+		}
+		if (weapon->ElemDmgAmt) {
+			eleBane += static_cast<int>(weapon->ElemDmgAmt * other->ResistSpell(weapon->ElemDmgType, 0, this) / 100);
+		}
+		my_hit.base_damage += eleBane;
+		hate += eleBane;
+
+#ifndef EQEMU_NO_WEAPON_DAMAGE_BONUS
+		// Damage bonus: applied to primary hand hits at level 28+ for warrior classes.
+		// Mirrors Client path at attack.cpp:1674-1685.
+		if (Hand == EQ::invslot::slotPrimary && GetLevel() >= 28 && IsWarriorClass()) {
+			int ucDamageBonus = static_cast<int>(GetWeaponDamageBonus(weapon));
+			my_hit.min_damage = ucDamageBonus;
+			hate += ucDamageBonus;
+		}
+
+		// Sinister Strikes: offhand damage bonus when AA/item/spell bonus present
+		if (Hand == EQ::invslot::slotSecondary &&
+		    (aabonuses.SecondaryDmgInc || itembonuses.SecondaryDmgInc || spellbonuses.SecondaryDmgInc)) {
+			int ucDamageBonus = static_cast<int>(GetWeaponDamageBonus(weapon, true));
+			my_hit.min_damage = ucDamageBonus;
+			hate += ucDamageBonus;
+		}
+#endif
+
+		int hit_chance_bonus = 0;
+		my_hit.offense = offense(my_hit.skill);
+
+		if (opts) {
+			my_hit.base_damage *= opts->damage_percent;
+			my_hit.base_damage += opts->damage_flat;
+			hate *= opts->hate_percent;
+			hate += opts->hate_flat;
+			hit_chance_bonus += opts->hit_chance;
+		}
+
+		my_hit.tohit = GetTotalToHit(my_hit.skill, hit_chance_bonus);
+
+		DoAttack(other, my_hit, opts, FromRiposte);
+	} else {
+		my_hit.damage_done = DMG_INVULNERABLE;
+	}
+
+	other->AddToHateList(this, hate);
+
+	if (GetHP() > 0 && !other->HasDied()) {
+		other->Damage(this, my_hit.damage_done, SPELL_UNKNOWN, my_hit.skill, true, -1, false, m_specialattacks);
+	} else {
+		return false;
+	}
+
+	if (HasDied()) {
+		return false;
+	}
+
+	MeleeLifeTap(my_hit.damage_done);
+	CommonBreakInvisibleFromCombat();
+
+	if (!GetTarget()) {
+		return true; // killed them
+	}
+
+	bool has_hit = my_hit.damage_done > 0;
+	if (has_hit && !FromRiposte && !other->HasDied()) {
+		// TryWeaponProc expects ItemData* (NPC overload), not ItemInstance*
+		TryWeaponProc(nullptr, weapon, other, Hand);
+
+		if (!other->HasDied()) {
+			TrySpellProc(nullptr, weapon, other, Hand);
+		}
+
+		if (HasSkillProcSuccess() && !other->HasDied()) {
+			TrySkillProc(other, my_hit.skill, 0, true, Hand);
+		}
+	}
+
+	if (GetHP() > 0 && !other->HasDied()) {
+		TriggerDefensiveProcs(other, Hand, true, my_hit.damage_done);
+	}
+
+	return has_hit;
+}
+
+// ============================================================
+// SetAttackTimer — Weapon Delay Path (Phase 1)
+// ============================================================
+
+void Companion::SetAttackTimer()
+{
+	// When the rule is off, delegate to the standard NPC path
+	// (uses npc_types.attack_delay — unchanged behavior).
+	if (!RuleB(Companions, UseWeaponDamage)) {
+		NPC::SetAttackTimer();
+		return;
+	}
+
+	// Weapon-delay path: mirrors Client::SetAttackTimer() (attack.cpp:6682-6782)
+	// but reads weapons from the inventory profile (GetInv()) instead of GetBotItem().
+	float haste_mod = GetHaste() * 0.01f;
+	int primary_speed   = 0;
+	int secondary_speed = 0;
+
+	// Default in case of no valid weapon
+	attack_timer.SetAtTrigger(4000, true);
+
+	Timer* TimerToUse = nullptr;
+
+	for (int i = EQ::invslot::slotRange; i <= EQ::invslot::slotSecondary; i++) {
+		if (i == EQ::invslot::slotPrimary) {
+			TimerToUse = &attack_timer;
+		} else if (i == EQ::invslot::slotRange) {
+			TimerToUse = &ranged_timer;
+		} else if (i == EQ::invslot::slotSecondary) {
+			TimerToUse = &attack_dw_timer;
+		} else {
+			continue; // hands — skip
+		}
+
+		// Dual wield check: disable offhand timer if class can't dual wield
+		if (i == EQ::invslot::slotSecondary) {
+			if (!CanThisClassDualWield() || HasTwoHanderEquipped()) {
+				attack_dw_timer.Disable();
+				continue;
+			}
+		}
+
+		// Get item from companion inventory profile
+		const EQ::ItemData* ItemToUse = nullptr;
+		EQ::ItemInstance* ci = GetInv().GetItem(i);
+		if (ci) {
+			ItemToUse = ci->GetItem();
+		}
+
+		// Validate weapon: must be a common item with non-zero damage and delay
+		if (ItemToUse != nullptr) {
+			if (!ItemToUse->IsClassCommon() || ItemToUse->Damage == 0 || ItemToUse->Delay == 0) {
+				ItemToUse = nullptr;
+			} else if ((ItemToUse->ItemType > EQ::item::ItemTypeLargeThrowing) &&
+			           (ItemToUse->ItemType != EQ::item::ItemTypeMartial) &&
+			           (ItemToUse->ItemType != EQ::item::ItemType2HPiercing)) {
+				ItemToUse = nullptr;
+			}
+		}
+
+		int hhe   = itembonuses.HundredHands + spellbonuses.HundredHands;
+		int delay = 0;
+
+		if (ItemToUse == nullptr) {
+			if (i == EQ::invslot::slotPrimary) {
+				delay = 100 * GetHandToHandDelay(); // unarmed fallback
+			} else {
+				// Range/secondary with no valid weapon: keep default or disable
+				if (i == EQ::invslot::slotSecondary) {
+					attack_dw_timer.Disable();
+				}
+				continue;
+			}
+		} else {
+			delay = 100 * ItemToUse->Delay;
+		}
+
+		int speed = static_cast<int>(delay / haste_mod);
+
+		if (ItemToUse && ItemToUse->ItemType == EQ::item::ItemTypeBow) {
+			// Companions don't carry quivers, so no quiver haste adjustment.
+			// Apply the minimum delay cap directly.
+			speed = std::max(speed, RuleI(Combat, QuiverHasteCap));
+		} else {
+			if (RuleB(Spells, Jun182014HundredHandsRevamp)) {
+				speed = static_cast<int>(speed + ((hhe / 1000.0f) * speed));
+			} else {
+				speed = static_cast<int>(speed + ((hhe / 100.0f) * delay));
+			}
+		}
+
+		bool reinit = !TimerToUse->Enabled();
+		TimerToUse->SetAtTrigger(std::max(RuleI(Combat, MinHastedDelay), speed), reinit, reinit);
+
+		if (i == EQ::invslot::slotPrimary) {
+			primary_speed = speed;
+		} else if (i == EQ::invslot::slotSecondary) {
+			secondary_speed = speed;
+		}
+	}
+
+	// Dual wield same-delay animation sync (matches Client::SetAttackTimer behavior)
+	if (primary_speed == secondary_speed) {
+		SetDualWieldingSameDelayWeapons(1);
+	} else {
+		SetDualWieldingSameDelayWeapons(0);
+	}
 }
 
 // ============================================================
