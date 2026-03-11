@@ -753,6 +753,138 @@ void Companion::SetAttackTimer()
 }
 
 // ============================================================
+// Triple Attack — Phase 2
+// ============================================================
+
+// CanCompanionTripleAttack: level and class eligibility check (no RNG).
+// Warriors triple at 56+. Monks and Rangers triple at 60+.
+// All other classes never triple attack.
+// This is called from CheckTripleAttack() and is public for testing.
+bool Companion::CanCompanionTripleAttack() const
+{
+	uint8 level = GetLevel();
+	uint8 cls   = GetClass();
+
+	switch (cls) {
+		case Class::Warrior:
+			return level >= 56;
+		case Class::Monk:
+		case Class::Ranger:
+			return level >= 60;
+		default:
+			return false;
+	}
+}
+
+// CheckTripleAttack: rolls for triple attack success.
+// Uses a percent chance derived from level, scaled by the ClassicTripleAttack
+// rule values if ClassicTripleAttack is true, or a skill-derived chance if
+// ClassicTripleAttack is false (matching Bot::CheckTripleAttack logic).
+// Returns false immediately when CanCompanionTripleAttack() is false.
+bool Companion::CheckTripleAttack()
+{
+	if (!CanCompanionTripleAttack()) {
+		return false;
+	}
+
+	int chance = 0;
+
+	if (RuleB(Combat, ClassicTripleAttack)) {
+		// Classic mode: use per-class rule values (same as Client/Bot).
+		switch (GetClass()) {
+			case Class::Warrior:
+				chance = RuleI(Combat, ClassicTripleAttackChanceWarrior);
+				break;
+			case Class::Monk:
+				chance = RuleI(Combat, ClassicTripleAttackChanceMonk);
+				break;
+			case Class::Ranger:
+				chance = RuleI(Combat, ClassicTripleAttackChanceRanger);
+				break;
+			default:
+				return false;
+		}
+	} else {
+		// Modern mode: skill-based chance (Bot::CheckTripleAttack line 2080).
+		// SkillCaps lacks SkillTripleAttack for Warriors/Monks/Rangers in this DB,
+		// so we derive a reasonable chance from level (25 base + 1 per level over 56/60).
+		// This gives warriors a 25% base at 56, growing to 29% at 60.
+		// Monks/Rangers start at 25% at 60.
+		uint8 level = GetLevel();
+		uint8 cls   = GetClass();
+		if (cls == Class::Warrior) {
+			chance = 25 + (level > 56 ? (level - 56) : 0);
+		} else {
+			// Monk, Ranger
+			chance = 25 + (level > 60 ? (level - 60) : 0);
+		}
+	}
+
+	if (chance < 1) {
+		return false;
+	}
+
+	// Apply bonus chance from item/spell bonuses (same as Bot path)
+	int inc = aabonuses.TripleAttackChance + spellbonuses.TripleAttackChance + itembonuses.TripleAttackChance;
+	if (inc != 0) {
+		chance = static_cast<int>(chance * (1.0f + inc / 100.0f));
+	}
+
+	return zone->random.Int(1, 100) <= chance;
+}
+
+// DoAttackRounds: performs one round of melee attacks on the target.
+// Mirrors Bot::DoAttackRounds (bot.cpp:2851-2947) but without AA-based
+// extra attacks since companions don't have AAs.
+// Called from Companion::Process() when attack_timer fires.
+void Companion::DoAttackRounds(Mob* target, int hand)
+{
+	if (!target || target->IsCorpse()) {
+		return;
+	}
+
+	// Primary attack
+	Attack(target, hand, false, false, false);
+
+	if (!target || target->HasDied()) {
+		return;
+	}
+
+	// Double attack check
+	bool can_double = CanThisClassDoubleAttack();
+
+	// Off-hand double attack requires DoubleAttack skill >= 150 or bonus
+	// (matching Bot behavior at bot.cpp:2861-2864)
+	if (can_double && hand == EQ::invslot::slotSecondary) {
+		can_double =
+			GetSkill(EQ::skills::SkillDoubleAttack) > 149 ||
+			(aabonuses.GiveDoubleAttack + spellbonuses.GiveDoubleAttack + itembonuses.GiveDoubleAttack) > 0;
+	}
+
+	if (can_double && CheckDoubleAttack()) {
+		Attack(target, hand, false, false, false);
+
+		if (!target || target->HasDied()) {
+			return;
+		}
+
+		// Triple attack: primary hand only, class/level eligible
+		if (hand == EQ::invslot::slotPrimary && CanCompanionTripleAttack()) {
+			if (CheckTripleAttack()) {
+				Attack(target, hand, false, false, false);
+
+				// Flurry chance from buffs/items (no AAs on companions)
+				int flurry_chance = spellbonuses.FlurryChance + itembonuses.FlurryChance;
+				if (flurry_chance && zone->random.Roll(flurry_chance)) {
+					if (!target || target->HasDied()) { return; }
+					Attack(target, hand, false, false, false);
+				}
+			}
+		}
+	}
+}
+
+// ============================================================
 // HP Regen
 // ============================================================
 
@@ -1305,6 +1437,30 @@ bool Companion::Process()
 	// pursuit. For rogues this routes them behind the target. Must run after target
 	// selection so GetTarget() is current.
 	UpdateCombatPositioning();
+
+	// Triple attack interception (Phase 2):
+	// Mob::DoMainHandAttackRounds() with UseLiveCombatRounds=true only does double
+	// attack — it never calls triple attack. This intercept fires the attack timers
+	// here (consuming them) so NPC::Process() -> AI_Process() sees them as not ready
+	// and skips its own melee call. We then perform the full DoAttackRounds() sequence
+	// which includes triple attack for qualifying classes and levels.
+	// Mirrors the same pattern used by Bot::Process() -> Bot::DoAttackRounds().
+	if (IsEngaged() && !IsStunned() && !IsMezzed() &&
+	    GetAppearance() != eaDead && !IsMeleeDisabled()) {
+		Mob* atk_target = GetTarget();
+		if (atk_target) {
+			if (attack_timer.Check()) {
+				DoAttackRounds(atk_target, EQ::invslot::slotPrimary);
+				TriggerDefensiveProcs(atk_target, EQ::invslot::slotPrimary, false);
+			}
+			if (CanThisClassDualWield() && attack_dw_timer.Check()) {
+				if (CheckDualWield()) {
+					DoAttackRounds(atk_target, EQ::invslot::slotSecondary);
+					TriggerDefensiveProcs(atk_target, EQ::invslot::slotSecondary, false);
+				}
+			}
+		}
+	}
 
 	bool npc_result = NPC::Process();
 	if (!npc_result) {

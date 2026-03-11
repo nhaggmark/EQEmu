@@ -118,6 +118,28 @@ public:
 	virtual void SetAttackTimer() override;
 
 	// -------------------------------------------------------
+	// Combat overrides — triple attack (Phase 2)
+	// -------------------------------------------------------
+	// Returns true when this companion's class and level qualify
+	// for triple attack. Does NOT roll — this is the eligibility check.
+	// Warriors: level 56+. Monks, Rangers: level 60+.
+	bool CanCompanionTripleAttack() const;
+
+	// Rolls for a triple attack success. Returns true if this attack
+	// round should include a third main-hand swing. Uses a chance value
+	// derived from the companion's level and class, matching the EQ
+	// damage bonus table approach (no SkillTripleAttack in DB for these
+	// classes, so we compute the chance directly).
+	bool CheckTripleAttack();
+
+	// Performs one round of melee attacks for this companion on the given
+	// target and hand (slotPrimary or slotSecondary). Includes double attack
+	// and triple attack (when eligible) — mirrors Bot::DoAttackRounds().
+	// Called from Companion::Process() instead of Mob::DoMainHandAttackRounds()
+	// when the companion is engaged and the attack timer fires.
+	void DoAttackRounds(Mob* target, int hand);
+
+	// -------------------------------------------------------
 	// AI Virtual Overrides
 	// -------------------------------------------------------
 	virtual void AI_Start(uint32 iMoveDelay = 0) override;

@@ -1181,6 +1181,200 @@ inline void TestCompanionSouthRoRegressionACSum()
 }
 
 // ============================================================
+// Suite 11: Phase 2 — Triple Attack (TDD)
+//
+// Tests for Companion::CanCompanionTripleAttack() and
+// Companion::CheckTripleAttack() and Companion::DoAttackRounds().
+//
+// These tests are written BEFORE the implementation (TDD).
+// They will FAIL until CheckTripleAttack/DoAttackRounds are
+// added to companion.h/.cpp.
+//
+// Triple attack rules (from PRD Phase 2):
+//   - Warrior: can triple at level 56+
+//   - Monk:    can triple at level 60+
+//   - Ranger:  can triple at level 60+
+//   - All other classes: never triple attack
+//
+// The UseLiveCombatRounds=true server setting means the base
+// Mob::DoMainHandAttackRounds() never checks triple attack.
+// Companion::DoAttackRounds() adds this capability.
+// ============================================================
+
+inline void TestCompanionTripleAttack()
+{
+	std::cout << "\n--- Suite 11: Phase 2 Triple Attack ---\n";
+
+	// ---- Test 11.1: CanCompanionTripleAttack callable — warrior below threshold ----
+	// Warrior needs to be level 56+ to triple attack.
+	// A level 50 warrior should return false.
+	Companion* warrior50 = CreateTestCompanionByClass(1, 50, 0); // class=1=Warrior
+	if (!warrior50) {
+		SkipTest("TripleAttack > warrior tests", "No warrior NPC near level 50 found in DB");
+	} else {
+		// Level must be < 56 for this test to be valid
+		if (warrior50->GetLevel() < 56) {
+			RunTest("TripleAttack > Warrior below 56 CanCompanionTripleAttack() == false",
+				false, warrior50->CanCompanionTripleAttack());
+		} else {
+			SkipTest("TripleAttack > Warrior below 56 test",
+				"NPC found is level 56+ — cannot test below-threshold warrior");
+		}
+	}
+
+	// ---- Test 11.2: CanCompanionTripleAttack — warrior at/above threshold ----
+	// A level 56-60 warrior should return true.
+	Companion* warrior60 = CreateTestCompanionByClass(1, 60, 0);
+	if (!warrior60) {
+		SkipTest("TripleAttack > warrior at 56+ tests", "No warrior NPC near level 60 found in DB");
+	} else {
+		if (warrior60->GetLevel() >= 56) {
+			RunTest("TripleAttack > Warrior at level >= 56 CanCompanionTripleAttack() == true",
+				true, warrior60->CanCompanionTripleAttack());
+		} else {
+			SkipTest("TripleAttack > Warrior at 56+ test",
+				"NPC found is below level 56 — cannot test at-threshold warrior");
+		}
+	}
+
+	// ---- Test 11.3: CanCompanionTripleAttack — monk below 60 returns false ----
+	Companion* monk55 = CreateTestCompanionByClass(7, 55, 0); // class=7=Monk
+	if (!monk55) {
+		SkipTest("TripleAttack > monk below 60 test", "No monk NPC near level 55 found in DB");
+	} else {
+		if (monk55->GetLevel() < 60) {
+			RunTest("TripleAttack > Monk below 60 CanCompanionTripleAttack() == false",
+				false, monk55->CanCompanionTripleAttack());
+		} else {
+			SkipTest("TripleAttack > Monk below 60 test",
+				"NPC found is level 60+ — cannot test below-threshold monk");
+		}
+	}
+
+	// ---- Test 11.4: CanCompanionTripleAttack — monk at 60 returns true ----
+	Companion* monk60 = CreateTestCompanionByClass(7, 60, 0);
+	if (!monk60) {
+		SkipTest("TripleAttack > monk at 60 test", "No monk NPC near level 60 found in DB");
+	} else {
+		if (monk60->GetLevel() >= 60) {
+			RunTest("TripleAttack > Monk at level >= 60 CanCompanionTripleAttack() == true",
+				true, monk60->CanCompanionTripleAttack());
+		} else {
+			SkipTest("TripleAttack > Monk at 60 test",
+				"NPC found is below level 60");
+		}
+	}
+
+	// ---- Test 11.5: CanCompanionTripleAttack — ranger at 60 returns true ----
+	Companion* ranger60 = CreateTestCompanionByClass(4, 60, 0); // class=4=Ranger
+	if (!ranger60) {
+		SkipTest("TripleAttack > ranger at 60 test", "No ranger NPC near level 60 found in DB");
+	} else {
+		if (ranger60->GetLevel() >= 60) {
+			RunTest("TripleAttack > Ranger at level >= 60 CanCompanionTripleAttack() == true",
+				true, ranger60->CanCompanionTripleAttack());
+		} else {
+			SkipTest("TripleAttack > Ranger at 60 test",
+				"NPC found is below level 60");
+		}
+	}
+
+	// ---- Test 11.6: CanCompanionTripleAttack — rogue never triples ----
+	Companion* rogue60 = CreateTestCompanionByClass(9, 60, 0); // class=9=Rogue
+	if (!rogue60) {
+		SkipTest("TripleAttack > rogue no-triple test", "No rogue NPC near level 60 found in DB");
+	} else {
+		RunTest("TripleAttack > Rogue at level 60 CanCompanionTripleAttack() == false",
+			false, rogue60->CanCompanionTripleAttack());
+	}
+
+	// ---- Test 11.7: CanCompanionTripleAttack — cleric never triples ----
+	Companion* cleric60 = CreateTestCompanionByClass(2, 60, 0); // class=2=Cleric
+	if (!cleric60) {
+		SkipTest("TripleAttack > cleric no-triple test", "No cleric NPC near level 60 found in DB");
+	} else {
+		RunTest("TripleAttack > Cleric at level 60 CanCompanionTripleAttack() == false",
+			false, cleric60->CanCompanionTripleAttack());
+	}
+
+	// ---- Test 11.8: CheckTripleAttack callable without crash ----
+	// CheckTripleAttack() does a random roll so we can't test the result deterministically.
+	// We just verify it's callable without crashing on a warrior 56+.
+	if (warrior60 && warrior60->GetLevel() >= 56) {
+		bool triple = warrior60->CheckTripleAttack(); // may be true or false — both are OK
+		RunTest("TripleAttack > CheckTripleAttack() callable without crash (warrior 56+)",
+			true, true); // crash test: if we reach here, it passed
+		(void)triple; // suppress unused warning
+	} else {
+		SkipTest("TripleAttack > CheckTripleAttack crash test", "No warrior NPC >= level 56 found in DB");
+	}
+
+	// ---- Test 11.9: DoAttackRounds callable without crash ----
+	// DoAttackRounds() is the new Companion method that mirrors Bot::DoAttackRounds.
+	// Verify it doesn't crash with a valid target.
+	if (warrior60) {
+		uint32 target_id = FindNPCTypeIDForClassLevel(1, 5, 15);
+		if (target_id != 0) {
+			const NPCType* target_type = content_db.LoadNPCTypesData(target_id);
+			if (target_type) {
+				auto* target = new NPC(target_type, nullptr, glm::vec4(5, 5, 0, 0), GravityBehavior::Water, false);
+				entity_list.AddNPC(target);
+
+				// DoAttackRounds should not crash — result may hit or miss (RNG)
+				warrior60->DoAttackRounds(target, EQ::invslot::slotPrimary);
+				RunTest("TripleAttack > DoAttackRounds(target, slotPrimary) does not crash",
+					true, true);
+
+				target->Depop();
+				entity_list.MobProcess();
+			}
+		} else {
+			SkipTest("TripleAttack > DoAttackRounds crash test", "No low-level NPC found in DB");
+		}
+	} else {
+		SkipTest("TripleAttack > DoAttackRounds crash test", "No warrior NPC near level 60 found in DB");
+	}
+
+	// ---- Test 11.10: DoAttackRounds with nullptr target does not crash ----
+	if (warrior60) {
+		warrior60->DoAttackRounds(nullptr, EQ::invslot::slotPrimary);
+		RunTest("TripleAttack > DoAttackRounds(nullptr, slotPrimary) does not crash",
+			true, true);
+	}
+
+	// ---- Test 11.11: Phase 1 + Phase 2 regression — Attack() with weapon still works ----
+	// Equip a weapon and call Attack() to confirm Phase 1 weapon damage path is not broken
+	// by the Phase 2 additions.
+	if (warrior60) {
+		uint32 weapon_id = FindWeapon(5, 50, 20, 50);
+		if (weapon_id != 0) {
+			warrior60->GiveItem(weapon_id, EQ::invslot::slotPrimary);
+
+			uint32 target_id2 = FindNPCTypeIDForClassLevel(1, 5, 15);
+			if (target_id2 != 0) {
+				const NPCType* target_type2 = content_db.LoadNPCTypesData(target_id2);
+				if (target_type2) {
+					auto* target2 = new NPC(target_type2, nullptr, glm::vec4(5, 5, 0, 0), GravityBehavior::Water, false);
+					entity_list.AddNPC(target2);
+
+					warrior60->Attack(target2, EQ::invslot::slotPrimary, false, false, false);
+					RunTest("TripleAttack > Phase 1 regression: Attack() with weapon still works",
+						true, true);
+
+					target2->Depop();
+					entity_list.MobProcess();
+				}
+			} else {
+				SkipTest("TripleAttack > Phase 1 regression test", "No low-level NPC found in DB");
+			}
+			warrior60->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+		} else {
+			SkipTest("TripleAttack > Phase 1 regression test", "No weapon found in items table");
+		}
+	}
+}
+
+// ============================================================
 // Entry Point
 // ============================================================
 
@@ -1229,6 +1423,9 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	CleanupTestCompanions();
 
 	TestCompanionSouthRoRegressionACSum();
+	CleanupTestCompanions();
+
+	TestCompanionTripleAttack();
 	CleanupTestCompanions();
 
 	// Final DB cleanup
