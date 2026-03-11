@@ -884,6 +884,111 @@ inline void TestCompanionWeaponDamagePath()
 		RunTest("WeaponDmg > CalcBonuses() with weapon equipped does not crash", true, true);
 		comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
 	}
+
+	// ---- Test 9.9: UseWeaponDamage=false — fallback to NPC behavior ----
+	// When the rule is false, Companion::Attack() and Companion::SetAttackTimer()
+	// must delegate to NPC::Attack() / NPC::SetAttackTimer() and not crash.
+	// We cannot easily observe which code path was taken from the outside, but we
+	// can verify:
+	//   (a) SetAttackTimer() with rule=false does not crash (even with weapon equipped)
+	//   (b) Attack(nullptr) still returns false (safety guard is hit before the rule check)
+	//   (c) Attack() with a target does not crash on the NPC fallback path
+	// The rule is restored to true at the end of this block.
+	RuleManager::Instance()->SetRule("Companions:UseWeaponDamage", "false");
+	RunTest("WeaponDmg > Rule toggled to false (setup)", false, RuleB(Companions, UseWeaponDamage));
+
+	if (weapon_id != 0) {
+		comp->GiveItem(weapon_id, EQ::invslot::slotPrimary);
+	}
+	// SetAttackTimer with rule=false must not crash
+	comp->SetAttackTimer();
+	RunTest("WeaponDmg > SetAttackTimer() with rule=false does not crash", true, true);
+
+	// Attack(nullptr) must return false regardless of rule state
+	bool null_attack_no_rule = comp->Attack(nullptr);
+	RunTest("WeaponDmg > Attack(nullptr) with rule=false returns false", false, null_attack_no_rule);
+
+	// Attack against a real target with rule=false must not crash (NPC path)
+	uint32 fallback_target_id = FindNPCTypeIDForClassLevel(1, 5, 15);
+	if (fallback_target_id != 0) {
+		const NPCType* fallback_type = content_db.LoadNPCTypesData(fallback_target_id);
+		if (fallback_type) {
+			auto* fallback_target = new NPC(fallback_type, nullptr, glm::vec4(5, 5, 0, 0), GravityBehavior::Water, false);
+			entity_list.AddNPC(fallback_target);
+			comp->Attack(fallback_target, EQ::invslot::slotPrimary, false, false, false);
+			RunTest("WeaponDmg > Attack(target) with rule=false (NPC path) does not crash", true, true);
+			fallback_target->Depop();
+			entity_list.MobProcess();
+		}
+	} else {
+		SkipTest("WeaponDmg > Attack(target) rule=false crash test", "No low-level NPC found in DB");
+	}
+
+	if (weapon_id != 0) {
+		comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+	}
+
+	// Restore rule to default
+	RuleManager::Instance()->SetRule("Companions:UseWeaponDamage", "true");
+	RunTest("WeaponDmg > Rule restored to true (teardown)", true, RuleB(Companions, UseWeaponDamage));
+
+	// ---- Test 9.10: Dual wield — both hands equipped, both accessible ----
+	// Verify that equipping weapons in both the primary and secondary slots works:
+	//   (a) GetInv().GetItem(slotPrimary) returns the primary weapon
+	//   (b) GetInv().GetItem(slotSecondary) returns the secondary weapon
+	//   (c) Attack(target, slotSecondary) does not crash (secondary weapon path)
+	// We use a warrior (class 1) which can dual wield, so the DW timer is active.
+	// The CanThisClassDualWield() check inside SetAttackTimer() is exercised here.
+	uint32 dw_primary_id   = FindWeapon(5, 50, 20, 40);   // 1H weapon for primary
+	uint32 dw_secondary_id = FindWeapon(5, 50, 16, 35);   // 1H weapon for secondary
+
+	if (dw_primary_id == 0 || dw_secondary_id == 0) {
+		SkipTest("WeaponDmg > Dual wield test", "Could not find suitable 1H weapons in DB");
+	} else {
+		// Use the existing warrior companion (comp) — class 1 can dual wield
+		comp->GiveItem(dw_primary_id,   EQ::invslot::slotPrimary);
+		comp->GiveItem(dw_secondary_id, EQ::invslot::slotSecondary);
+
+		const EQ::ItemInstance* dw_pri = comp->GetInv().GetItem(EQ::invslot::slotPrimary);
+		const EQ::ItemInstance* dw_sec = comp->GetInv().GetItem(EQ::invslot::slotSecondary);
+
+		RunTestNotNull("WeaponDmg > DW primary slot returns non-null ItemInstance",
+			static_cast<const void*>(dw_pri));
+		RunTestNotNull("WeaponDmg > DW secondary slot returns non-null ItemInstance",
+			static_cast<const void*>(dw_sec));
+
+		if (dw_pri && dw_pri->GetItem()) {
+			RunTestGreaterThan("WeaponDmg > DW primary weapon Damage > 0",
+				static_cast<int>(dw_pri->GetItem()->Damage), 0);
+		}
+		if (dw_sec && dw_sec->GetItem()) {
+			RunTestGreaterThan("WeaponDmg > DW secondary weapon Damage > 0",
+				static_cast<int>(dw_sec->GetItem()->Damage), 0);
+		}
+
+		// SetAttackTimer with both weapons equipped must not crash
+		comp->SetAttackTimer();
+		RunTest("WeaponDmg > SetAttackTimer() with dual wield equipped does not crash", true, true);
+
+		// Attack with secondary hand must not crash
+		uint32 dw_target_id = FindNPCTypeIDForClassLevel(1, 5, 15);
+		if (dw_target_id != 0) {
+			const NPCType* dw_type = content_db.LoadNPCTypesData(dw_target_id);
+			if (dw_type) {
+				auto* dw_target = new NPC(dw_type, nullptr, glm::vec4(5, 5, 0, 0), GravityBehavior::Water, false);
+				entity_list.AddNPC(dw_target);
+				comp->Attack(dw_target, EQ::invslot::slotSecondary, false, false, false);
+				RunTest("WeaponDmg > Attack(target, slotSecondary) with DW equipped does not crash", true, true);
+				dw_target->Depop();
+				entity_list.MobProcess();
+			}
+		} else {
+			SkipTest("WeaponDmg > DW secondary attack crash test", "No low-level NPC found in DB");
+		}
+
+		comp->RemoveItemFromSlot(EQ::invslot::slotPrimary);
+		comp->RemoveItemFromSlot(EQ::invslot::slotSecondary);
+	}
 }
 
 // ============================================================

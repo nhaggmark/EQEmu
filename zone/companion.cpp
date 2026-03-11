@@ -654,7 +654,10 @@ void Companion::SetAttackTimer()
 
 	// Weapon-delay path: mirrors Client::SetAttackTimer() (attack.cpp:6682-6782)
 	// but reads weapons from the inventory profile (GetInv()) instead of GetBotItem().
-	float haste_mod = GetHaste() * 0.01f;
+	// Guard against division by zero: GetHaste() can return 0 under 100% melee
+	// inhibition debuffs. Clamp to 0.01 (1% of normal speed) so the cast to int
+	// of (delay / haste_mod) never encounters infinity or undefined behavior.
+	float haste_mod = std::max(0.01f, GetHaste() * 0.01f);
 	int primary_speed   = 0;
 	int secondary_speed = 0;
 
