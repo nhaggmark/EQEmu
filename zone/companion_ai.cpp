@@ -362,6 +362,14 @@ bool Companion::AICastSpell(int8 iChance, uint32 iSpellTypes)
 	            GetTarget() ? GetTarget()->GetName() : "none",
 	            IsEngaged(), GetManaRatio(), GetClass());
 
+	// Never cast while sitting/meditating (BUG-020).
+	// Companions sit with the owner to recover mana; casting while sitting
+	// is both incorrect and disrupts the meditation cycle.
+	if (IsSitting()) {
+		LogAIDetail("Companion [{}] AICastSpell: sitting — skipping all spell casting", GetName());
+		return false;
+	}
+
 	if (m_companion_spells.empty()) {
 		LogAIDetail("Companion [{}] AICastSpell: no companion spells, falling back to NPC::AI_EngagedCastCheck", GetName());
 		// No companion spells loaded — fall back to base NPC AI
