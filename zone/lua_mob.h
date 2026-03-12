@@ -401,6 +401,7 @@ public:
 	void RemoveNimbusEffect(int effect_id);
 	void RemoveAllNimbusEffects();
 	bool IsRunning();
+	bool IsSitting();
 	void SetRunning(bool running);
 	void SetBodyType(uint8 new_body, bool overwrite_orig);
 	void SetTargetable(bool on);

@@ -1996,6 +1996,11 @@ bool Lua_Mob::IsRunning() {
 	return self->IsRunning();
 }
 
+bool Lua_Mob::IsSitting() {
+	Lua_Safe_Call_Bool();
+	return self->IsSitting();
+}
+
 void Lua_Mob::SetRunning(bool running) {
 	Lua_Safe_Call_Void();
 	self->SetRunning(running);
@@ -3973,6 +3978,7 @@ luabind::scope lua_register_mob() {
 	.def("IsRoamer", (bool(Lua_Mob::*)(void))&Lua_Mob::IsRoamer)
 	.def("IsRooted", (bool(Lua_Mob::*)(void))&Lua_Mob::IsRooted)
 	.def("IsRunning", (bool(Lua_Mob::*)(void))&Lua_Mob::IsRunning)
+	.def("IsSitting", (bool(Lua_Mob::*)(void))&Lua_Mob::IsSitting)
 	.def("IsSilenced", (bool(Lua_Mob::*)(void))&Lua_Mob::IsSilenced)
 	.def("IsStunned", (bool(Lua_Mob::*)(void))&Lua_Mob::IsStunned)
 	.def("IsTargetable", (bool(Lua_Mob::*)(void))&Lua_Mob::IsTargetable)

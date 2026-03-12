@@ -243,8 +243,12 @@ public:
 	// Shared spell selection helpers (companion_ai.cpp)
 	bool AI_HealGroupMember(bool engaged);
 	bool AI_BuffGroupMember();
-	bool AI_WizardBuff();           // Issue #8: wizard-specific buff — DS only to melee targets
+	bool AI_WizardBuff();           // Issue #8: wizard-specific buff — DS only to melee targets, OOC only non-DS
 	bool AI_CureGroupMember();
+
+	// BUG-019: DS spell identification helper — exposed as public static for testing.
+	// Returns true if spell_id has a SE_DamageShield (effect 59) in any effect slot.
+	static bool IsDamageShieldSpell(uint16 spell_id);
 	bool AI_NukeTarget(uint32 nuke_types);
 	bool AI_SlowDebuff(Mob* target);
 	bool AI_MezTarget();

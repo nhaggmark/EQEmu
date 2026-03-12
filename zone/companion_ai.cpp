@@ -232,13 +232,14 @@ static uint16 SelectHoTSpell(
 }
 
 // ============================================================
-// Internal helper: returns true if spell_id has a SE_DamageShield
+// BUG-019: Returns true if spell_id has a SE_DamageShield
 // (effect ID 59) in any of its effect slots.  Used by AI_WizardBuff
-// to identify damage shield spells that should only target melee
-// companions (not healers/casters who rarely get hit in melee).
-// See Issue #8.
+// to identify damage shield spells.  DS spells must only target
+// melee companions AND must only be cast during combat (BUG-019 fix).
+// Exposed as a public static member of Companion for testability.
+// See Issue #8 and BUG-019.
 // ============================================================
-static bool IsDamageShieldSpell(uint16 spell_id)
+/*static*/ bool Companion::IsDamageShieldSpell(uint16 spell_id)
 {
 	if (!IsValidSpell(spell_id)) {
 		return false;
@@ -360,6 +361,14 @@ bool Companion::AICastSpell(int8 iChance, uint32 iSpellTypes)
 	            GetName(), m_companion_spells.size(), iChance, iSpellTypes,
 	            GetTarget() ? GetTarget()->GetName() : "none",
 	            IsEngaged(), GetManaRatio(), GetClass());
+
+	// Never cast while sitting/meditating (BUG-020).
+	// Companions sit with the owner to recover mana; casting while sitting
+	// is both incorrect and disrupts the meditation cycle.
+	if (IsSitting()) {
+		LogAIDetail("Companion [{}] AICastSpell: sitting — skipping all spell casting", GetName());
+		return false;
+	}
 
 	if (m_companion_spells.empty()) {
 		LogAIDetail("Companion [{}] AICastSpell: no companion spells, falling back to NPC::AI_EngagedCastCheck", GetName());
@@ -694,14 +703,27 @@ bool Companion::AI_WizardBuff()
 		}
 	}
 
+	bool engaged = IsEngaged();
+
 	for (const auto& cs : buff_spells) {
 		if (cs.time_cancast > now_ms) {
 			continue;
 		}
 
+		// BUG-019: DS spells must ONLY be cast during combat.
+		// Casting DS out of combat wastes mana and serves no purpose —
+		// the DS only triggers when the target is hit by melee attacks.
+		if (IsDamageShieldSpell(cs.spellid) && !engaged) {
+			LogAIDetail("Companion [{}] AI_WizardBuff: skipping DS spell [{}] ({}) — not engaged (BUG-019 fix)",
+			            GetName(), cs.spellid,
+			            IsValidSpell(cs.spellid) ? spells[cs.spellid].name : "INVALID");
+			continue;
+		}
+
 		const auto& sp = spells[cs.spellid];
 
-		// Choose which target list to use based on spell type
+		// Choose which target list to use based on spell type:
+		// DS spells target only melee roles; non-DS buffs target everyone.
 		const std::vector<Mob*>& targets = IsDamageShieldSpell(cs.spellid)
 		                                   ? melee_targets
 		                                   : all_targets;
