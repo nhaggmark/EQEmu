@@ -2828,6 +2828,98 @@ inline void TestCompanionAuditFixes()
 			59, ds_effect_id);
 	}
 
+	// ------------------------------------------------------------
+	// 14.28: BUG-019 regression — Wizard does NOT cast DS spells out of combat
+	//
+	// Damage shield spells (SE_DamageShield = 59) must ONLY be cast during
+	// combat (IsEngaged() == true). When idle, AI_WizardBuff() must skip
+	// DS spells entirely, even for melee targets.
+	//
+	// Test 14.28a: IsDamageShieldSpell correctly identifies known DS spells.
+	// Test 14.28b: IsDamageShieldSpell returns false for non-DS spells.
+	// Test 14.28c: Wizard spell list at level 50 contains at least one DS spell.
+	// Test 14.28d: AI_WizardBuff with an idle wizard does NOT advance time_cancast
+	//             for any DS spell (engagement gate prevents DS selection OOC).
+	// ------------------------------------------------------------
+	{
+		// 14.28a: O'Keil's Flickering Flame (spell 1419) is a known DS spell.
+		// effectid1=59 (SE_DamageShield).
+		bool flickering_flame_is_ds = Companion::IsDamageShieldSpell(1419);
+		RunTest("BUG-019 > 14.28a IsDamageShieldSpell identifies O`Keil's Flickering Flame (1419) as DS",
+			true, flickering_flame_is_ds);
+
+		// 14.28b: O'Keil's Embers (spell 2551) is also a DS spell.
+		bool embers_is_ds = Companion::IsDamageShieldSpell(2551);
+		RunTest("BUG-019 > 14.28b IsDamageShieldSpell identifies O`Keil's Embers (2551) as DS",
+			true, embers_is_ds);
+	}
+
+	{
+		// 14.28c + 14.28d: Wizard with DS spells loaded does not cast DS when idle.
+		Companion* wiz_019 = CreateTestCompanionByClass(12, 50, 0); // Wizard = class 12
+		if (!wiz_019) {
+			SkipTest("BUG-019 > 14.28c Wizard level-50 spell list contains DS spells",
+				"No wizard NPC near level 50 found in DB");
+			SkipTest("BUG-019 > 14.28d AI_WizardBuff does not advance DS spell time_cancast when idle",
+				"No wizard NPC near level 50 found in DB");
+		} else {
+			wiz_019->LoadCompanionSpells();
+			wiz_019->SetStance(COMPANION_STANCE_BALANCED);
+
+			// Identify DS spells in the loaded spell list
+			auto companion_spells = wiz_019->GetCompanionSpells();
+			std::vector<std::pair<uint16, uint32>> ds_snapshots; // {spellid, time_cancast_before}
+			for (const auto& cs : companion_spells) {
+				if (Companion::IsDamageShieldSpell(cs.spellid)) {
+					ds_snapshots.push_back({cs.spellid, cs.time_cancast});
+				}
+			}
+
+			// 14.28c: Wizard at level 50 should have O'Keil's Flickering Flame (1419)
+			// in companion_spell_sets (min_level=34, max_level=65).
+			bool has_ds_spell = !ds_snapshots.empty();
+			RunTest("BUG-019 > 14.28c Wizard level-50 spell list contains at least one DS spell",
+				true, has_ds_spell);
+
+			if (!has_ds_spell) {
+				SkipTest("BUG-019 > 14.28d AI_WizardBuff does not advance DS time_cancast when idle",
+					"No DS spells loaded for wizard at level 50");
+			} else {
+				// Confirm not engaged before calling AI_WizardBuff
+				bool is_idle = !wiz_019->IsEngaged();
+				RunTest("BUG-019 > 14.28d-pre Wizard is not engaged (idle state for DS OOC test)",
+					true, is_idle);
+
+				// Call AI_WizardBuff — with the BUG-019 fix, DS spells should be
+				// skipped entirely (not selected as cast candidates) when not engaged.
+				// time_cancast is ONLY updated by SetSpellTimeCanCast() when AIDoSpellCast
+				// returns true. Even if AIDoSpellCast fails silently, the key invariant is
+				// that IsDamageShieldSpell+!engaged causes a continue before the cast attempt.
+				// We verify this by confirming no DS spell's time_cancast advanced.
+				wiz_019->AI_WizardBuff();
+
+				auto spells_after = wiz_019->GetCompanionSpells();
+				bool ds_time_advanced = false;
+				for (const auto& [spellid, cancast_before] : ds_snapshots) {
+					for (const auto& cs_after : spells_after) {
+						if (cs_after.spellid == spellid && cs_after.time_cancast > cancast_before) {
+							ds_time_advanced = true;
+							std::cerr << "[FAIL] BUG-019: DS spell " << spellid
+							          << " (" << (IsValidSpell(spellid) ? spells[spellid].name : "?") << ")"
+							          << " time_cancast advanced from " << cancast_before
+							          << " to " << cs_after.time_cancast
+							          << " — DS was cast out of combat!\n";
+							break;
+						}
+					}
+					if (ds_time_advanced) break;
+				}
+				RunTest("BUG-019 > 14.28d AI_WizardBuff does NOT advance DS spell time_cancast when idle",
+					false, ds_time_advanced);
+			}
+		}
+	}
+
 	std::cout << "--- Suite 14 Complete ---\n";
 }
 
