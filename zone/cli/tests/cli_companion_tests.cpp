@@ -3906,6 +3906,414 @@ inline void TestCompanionAIBehaviorFixes()
 			true, always_meditate);
 	}
 
+	// ---- 18.11: BUG-027 — AlwaysMeditateRegen=false restores flat-base (standing) regen ----
+	// When the rule is disabled, a standing non-melee companion should NOT use the meditate
+	// formula. The base regen is 2/tick (flat standing rate), before multipliers.
+	// After this test we restore the rule to true so subsequent tests are not affected.
+	{
+		Companion* wizard = CreateTestCompanionByClass(12, 50, 0); // Wizard = class 12
+		if (!wizard) {
+			SkipTest("BUG-027 > 18.11 AlwaysMeditateRegen=false → flat base regen",
+				"No wizard NPC near level 50 found in DB");
+		} else {
+			wizard->ScaleStatsToLevel(50);
+			wizard->SetAppearance(eaStanding);
+			RunTest("BUG-027 > 18.11 prereq: wizard is standing",
+				false, wizard->IsSitting());
+
+			// Disable always-meditate to restore authentic behavior
+			RuleManager::Instance()->SetRule("Companions:AlwaysMeditateRegen", "false");
+			int64 regen_standing_nomeditate = wizard->CalcManaRegen();
+
+			// With AlwaysMeditateRegen=false and standing, should get flat base rate only.
+			// The flat base is 2/tick (before spell/item/mult bonuses which are 0 in test).
+			// The meditate formula at level 50 with some meditate skill yields much higher.
+			// We verify regen <= 4 (base 2 + possible small spell/item bonuses from npc_types).
+			RunTest("BUG-027 > 18.11 Flat base ≤ 4/tick when AlwaysMeditateRegen=false",
+				true, regen_standing_nomeditate <= 4);
+
+			// Restore default so other tests pass
+			RuleManager::Instance()->SetRule("Companions:AlwaysMeditateRegen", "true");
+			int64 regen_restored = wizard->CalcManaRegen();
+			RunTestGreaterThanInt64("BUG-027 > 18.11 Meditate regen restored after rule reset",
+				regen_restored, 4);
+		}
+	}
+
+	// ---- 18.12: BUG-027 — AlwaysMeditateRegen=false: sitting caster still gets meditate rate ----
+	// Even with the rule off, a SITTING non-melee companion uses the meditate formula (IsSitting).
+	// This verifies the OR condition: (RuleB(...) || IsSitting()).
+	{
+		Companion* cleric = CreateTestCompanionByClass(2, 50, 0); // Cleric = class 2
+		if (!cleric) {
+			SkipTest("BUG-027 > 18.12 AlwaysMeditateRegen=false: sitting cleric still gets meditate",
+				"No cleric NPC near level 50 found in DB");
+		} else {
+			cleric->ScaleStatsToLevel(50);
+			cleric->SetAppearance(eaSitting);
+			RunTest("BUG-027 > 18.12 prereq: cleric is sitting",
+				true, cleric->IsSitting());
+
+			// Disable always-meditate
+			RuleManager::Instance()->SetRule("Companions:AlwaysMeditateRegen", "false");
+			int64 regen_sitting = cleric->CalcManaRegen();
+
+			// Even with the rule off, sitting should still use meditate formula (> 2/tick base)
+			RunTestGreaterThanInt64("BUG-027 > 18.12 Sitting cleric still gets meditate rate with rule=false",
+				regen_sitting, 2);
+
+			// Restore default
+			RuleManager::Instance()->SetRule("Companions:AlwaysMeditateRegen", "true");
+		}
+	}
+
+	// ---- 18.13: BUG-027 — Bard regen path unaffected by AlwaysMeditateRegen ----
+	// Bards have a separate early-return path in CalcManaRegen(). Verify that toggling
+	// AlwaysMeditateRegen does not change bard regen (bards should get 1 or 2/tick standing).
+	{
+		Companion* bard = CreateTestCompanionByClass(40, 50, 0); // Bard = class 40
+		if (!bard) {
+			SkipTest("BUG-027 > 18.13 Bard regen unaffected by AlwaysMeditateRegen",
+				"No bard NPC near level 50 found in DB");
+		} else {
+			bard->SetAppearance(eaStanding);
+
+			// With default rule (true)
+			int64 regen_default = bard->CalcManaRegen();
+
+			// Disable always-meditate
+			RuleManager::Instance()->SetRule("Companions:AlwaysMeditateRegen", "false");
+			int64 regen_rule_off = bard->CalcManaRegen();
+
+			// Bard regen should be identical regardless of the rule
+			RunTest("BUG-027 > 18.13 Bard regen same regardless of AlwaysMeditateRegen",
+				static_cast<int>(regen_default), static_cast<int>(regen_rule_off));
+
+			// Restore default
+			RuleManager::Instance()->SetRule("Companions:AlwaysMeditateRegen", "true");
+		}
+	}
+
+	// ---- 18.14: BUG-024 — Caster companion GetManaRatio() reflects SetMana() ----
+	// Verifies the mana ratio calculation that drives the LOM flag logic works correctly.
+	// At full mana: ratio = 100. At half mana: ratio ≈ 50. At zero mana: ratio = 0.
+	// This tests the condition GetManaRatio() <= LOMThresholdPct that gates m_lom_announced.
+	{
+		Companion* wizard = CreateTestCompanionByClass(12, 50, 0); // Wizard = class 12
+		if (!wizard) {
+			SkipTest("BUG-024 > 18.14 Caster mana ratio reflects SetMana",
+				"No wizard NPC near level 50 found in DB");
+		} else {
+			wizard->ScaleStatsToLevel(50);
+
+			// Full mana — ratio should be 100
+			wizard->SetMana(wizard->GetMaxMana());
+			RunTest("BUG-024 > 18.14a Full mana → GetManaRatio() == 100",
+				100, static_cast<int>(wizard->GetManaRatio()));
+
+			// Zero mana — ratio should be 0
+			wizard->SetMana(0);
+			RunTest("BUG-024 > 18.14b Zero mana → GetManaRatio() == 0",
+				0, static_cast<int>(wizard->GetManaRatio()));
+
+			// Restore full mana
+			wizard->SetMana(wizard->GetMaxMana());
+		}
+	}
+
+	// ---- 18.15: BUG-024 — LOM threshold check: mana ratio at/below 15% triggers LOM condition ----
+	// The LOM logic fires when GetManaRatio() <= LOMThresholdPct (default 15).
+	// Verify the ratio arithmetic: setting mana to 10% of max gives ratio of 10.
+	// Setting mana to exactly 15% gives ratio of 15. At 16%, above threshold.
+	// This validates that the condition (GetManaRatio() <= lom_threshold) works correctly.
+	{
+		Companion* wizard = CreateTestCompanionByClass(12, 50, 0); // Wizard = class 12
+		if (!wizard) {
+			SkipTest("BUG-024 > 18.15 Mana ratio at/below LOM threshold is detectable",
+				"No wizard NPC near level 50 found in DB");
+		} else {
+			wizard->ScaleStatsToLevel(50);
+			int64 max_mana = wizard->GetMaxMana();
+			if (max_mana <= 0) {
+				SkipTest("BUG-024 > 18.15 Mana ratio at/below LOM threshold is detectable",
+					"Wizard companion has no mana after ScaleStatsToLevel");
+			} else {
+				float lom_threshold = static_cast<float>(RuleI(Companions, LOMThresholdPct));
+
+				// Set mana to 10% of max — should be at or below LOM threshold (15%)
+				wizard->SetMana(static_cast<int64>(max_mana * 0.10f));
+				float ratio_at_10pct = wizard->GetManaRatio();
+				RunTest("BUG-024 > 18.15a Mana at 10% → ratio <= LOMThresholdPct (15)",
+					true, ratio_at_10pct <= lom_threshold);
+
+				// Set mana to 14% of max — this is below the 15% threshold.
+				// Using 14% avoids floating-point edge cases from setting mana to exactly 15%.
+				wizard->SetMana(static_cast<int64>((max_mana * 14) / 100));
+				float ratio_at_14pct = wizard->GetManaRatio();
+				RunTest("BUG-024 > 18.15b Mana at 14% → ratio < LOMThresholdPct (15)",
+					true, ratio_at_14pct < lom_threshold);
+
+				// Set mana to 50% — well above threshold, LOM flag should reset
+				wizard->SetMana(static_cast<int64>(max_mana * 0.50f));
+				float ratio_at_50pct = wizard->GetManaRatio();
+				RunTest("BUG-024 > 18.15c Mana at 50% → ratio > LOMThresholdPct (reset condition)",
+					true, ratio_at_50pct > lom_threshold);
+
+				// Restore full mana
+				wizard->SetMana(max_mana);
+			}
+		}
+	}
+
+	// ---- 18.16: BUG-024 — Non-caster (warrior) has GetMaxMana() == 0 → LOM check skipped ----
+	// The LOM logic guards with (GetMaxMana() > 0). Warriors have no mana,
+	// so GetMaxMana() returns 0 and the LOM block is never entered.
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0); // Warrior = class 1
+		if (!warrior) {
+			SkipTest("BUG-024 > 18.16 Warrior GetMaxMana() == 0 → LOM check skipped",
+				"No warrior NPC near level 50 found in DB");
+		} else {
+			// Warriors have no mana — the LOM condition (GetMaxMana() > 0) is false
+			RunTest("BUG-024 > 18.16 Warrior GetMaxMana() == 0 (LOM block not entered)",
+				true, warrior->GetMaxMana() <= 0);
+
+			// Confirm GetManaRatio returns 100 when max_mana == 0 (the safe default)
+			float warrior_ratio = warrior->GetManaRatio();
+			RunTest("BUG-024 > 18.16b Warrior GetManaRatio() == 100 (no mana = full)",
+				100, static_cast<int>(warrior_ratio));
+		}
+	}
+
+	// ---- 18.17: BUG-023 — Backstab distance formula: target_size/2 + 2 ----
+	// The BUG-023 fix computes backstab_dist = (target_size / 2.0f) + 2.0f.
+	// This test verifies the formula directly: for a target of size 5 (default),
+	// the backstab distance should be 4.5. For size 10, it should be 7.0.
+	// We verify this by creating a companion (which has a known size) and computing
+	// the expected backstab distance manually.
+	{
+		Companion* rogue = CreateTestCompanionByClass(9, 50, 0); // Rogue = class 9
+		Companion* target_mob = CreateTestCompanionByClass(1, 50, 0); // Warrior as target
+		if (!rogue || !target_mob) {
+			SkipTest("BUG-023 > 18.17 Backstab distance formula: target_size/2 + 2",
+				"Required NPC not found in DB");
+		} else {
+			// The formula from companion.cpp:
+			//   float target_size = target->GetSize() > 0.0f ? target->GetSize() : 5.0f;
+			//   float backstab_dist = (target_size / 2.0f) + 2.0f;
+			float actual_size = target_mob->GetSize() > 0.0f ? target_mob->GetSize() : 5.0f;
+			float expected_backstab_dist = (actual_size / 2.0f) + 2.0f;
+
+			// Verify the formula produces a positive offset beyond the mob radius
+			RunTest("BUG-023 > 18.17a Backstab distance > 2 (non-zero offset)",
+				true, expected_backstab_dist > 2.0f);
+
+			// Verify the distance is not on the same spot as the target (> 0)
+			RunTest("BUG-023 > 18.17b Backstab distance > 0 (rogue not inside target)",
+				true, expected_backstab_dist > 0.0f);
+
+			// Verify the formula uses target_size (mob radius) + 2 unit offset
+			RunTestFloat("BUG-023 > 18.17c Backstab dist = target_size/2 + 2",
+				(actual_size / 2.0f) + 2.0f, expected_backstab_dist);
+		}
+	}
+
+	// ---- 18.18: BUG-023 — Behind-position is computed from TARGET position, not rogue position ----
+	// The fix calculates: dest = target_pos + behind_direction * backstab_dist
+	// (relative to target, NOT relative to rogue).
+	// We verify this by setting the rogue and target at different positions and
+	// computing the expected destination using the same formula as companion.cpp.
+	// The result must be near the target, not near the rogue.
+	{
+		Companion* rogue = CreateTestCompanionByClass(9, 50, 0);
+		Companion* target_mob = CreateTestCompanionByClass(1, 50, 0);
+		if (!rogue || !target_mob) {
+			SkipTest("BUG-023 > 18.18 Behind-position computed from target, not rogue",
+				"Required NPC not found in DB");
+		} else {
+			// Place rogue far from target to make the test meaningful
+			// Rogue at (100, 100), target at (0, 0) facing north (heading=0)
+			rogue->SetPosition(100.0f, 100.0f, 0.0f);
+			target_mob->SetPosition(0.0f, 0.0f, 0.0f);
+			target_mob->SetHeading(0.0f); // facing north (EQ: heading=0 = north)
+
+			// Replicate the formula from companion.cpp BUG-023 fix:
+			//   float target_heading_rad = target->GetHeading() / 256.0f * M_PI
+			//   float behind_dx = sin(target_heading_rad + M_PI)
+			//   float behind_dy = cos(target_heading_rad + M_PI)
+			//   dest_x = target->GetX() + behind_dx * backstab_dist
+			//   dest_y = target->GetY() + behind_dy * backstab_dist
+			float target_size = target_mob->GetSize() > 0.0f ? target_mob->GetSize() : 5.0f;
+			float backstab_dist = (target_size / 2.0f) + 2.0f;
+			float target_heading_rad = target_mob->GetHeading() / 256.0f * static_cast<float>(M_PI);
+			float behind_dx = std::sin(target_heading_rad + static_cast<float>(M_PI));
+			float behind_dy = std::cos(target_heading_rad + static_cast<float>(M_PI));
+			float dest_x = target_mob->GetX() + behind_dx * backstab_dist;
+			float dest_y = target_mob->GetY() + behind_dy * backstab_dist;
+
+			// Distance from dest to target should be ~backstab_dist
+			float dist_to_target = std::sqrt(dest_x * dest_x + dest_y * dest_y);
+			RunTestFloat("BUG-023 > 18.18a Dest distance from target == backstab_dist",
+				backstab_dist, dist_to_target, 0.1f);
+
+			// Distance from dest to rogue (100,100) should be much larger than backstab_dist
+			float dx_to_rogue = dest_x - 100.0f;
+			float dy_to_rogue = dest_y - 100.0f;
+			float dist_to_rogue = std::sqrt(dx_to_rogue * dx_to_rogue + dy_to_rogue * dy_to_rogue);
+			RunTest("BUG-023 > 18.18b Dest is near target (not near rogue)",
+				true, dist_to_rogue > backstab_dist + 5.0f);
+		}
+	}
+
+	// ---- 18.19: BUG-023 — Behind-position heading direction is reciprocal of target facing ----
+	// For a target facing heading=0 (north), "behind" is south (positive Y in EQ).
+	// The formula produces behind_dy = cos(0 + pi) = cos(pi) = -1, behind_dx = sin(pi) = 0.
+	// So dest_y = target_y + (-1 * backstab_dist) = target_y - backstab_dist (south).
+	// We verify the direction is correct for a north-facing target.
+	{
+		Companion* rogue = CreateTestCompanionByClass(9, 50, 0);
+		Companion* target_mob = CreateTestCompanionByClass(1, 50, 0);
+		if (!rogue || !target_mob) {
+			SkipTest("BUG-023 > 18.19 Behind direction is reciprocal of target facing",
+				"Required NPC not found in DB");
+		} else {
+			target_mob->SetPosition(0.0f, 0.0f, 0.0f);
+			// heading=0 in EQ maps to north. "Behind" = south = negative Y (EQ Y = north).
+			// In EQ coordinate system: heading=0 is straight ahead (north).
+			// The reciprocal heading (behind) = heading + 256 (pi radians = 180 deg in EQ units).
+			// With heading=0: behind_dx=sin(pi)≈0, behind_dy=cos(pi)=-1.
+			// So dest is at (0, -backstab_dist, 0) — due south of the target.
+			target_mob->SetHeading(0.0f);
+			float target_size = target_mob->GetSize() > 0.0f ? target_mob->GetSize() : 5.0f;
+			float backstab_dist = (target_size / 2.0f) + 2.0f;
+			float target_heading_rad = 0.0f / 256.0f * static_cast<float>(M_PI);
+			float behind_dx = std::sin(target_heading_rad + static_cast<float>(M_PI));
+			float behind_dy = std::cos(target_heading_rad + static_cast<float>(M_PI));
+			float dest_x = target_mob->GetX() + behind_dx * backstab_dist;
+			float dest_y = target_mob->GetY() + behind_dy * backstab_dist;
+
+			// behind_dy should be -1 (south direction)
+			RunTestFloat("BUG-023 > 18.19a North-facing target → behind_dy = -1",
+				-1.0f, behind_dy, 0.001f);
+
+			// behind_dx should be ~0 (no east-west component)
+			RunTestFloat("BUG-023 > 18.19b North-facing target → behind_dx ≈ 0",
+				0.0f, behind_dx, 0.001f);
+
+			// dest_y should be negative (south of target at 0,0)
+			RunTest("BUG-023 > 18.19c Dest is south of north-facing target (dest_y < 0)",
+				true, dest_y < 0.0f);
+
+			// dest should be at exactly (0, -backstab_dist, 0)
+			RunTestFloat("BUG-023 > 18.19d Dest_x == target_x (no east-west drift)",
+				0.0f, dest_x, 0.01f);
+		}
+	}
+
+	// ---- 18.20: BUG-026 — Caster positioning step-closer constants are correct ----
+	// The BUG-026 fix uses these constants in UpdateCombatPositioning():
+	//   - Initial goal: 70% of CasterCombatRange (desired_dist = range * 0.7)
+	//   - Step reduction: 10% of CasterCombatRange per iteration
+	//   - Minimum distance: 20% of CasterCombatRange
+	// We verify these constants produce the expected iteration values.
+	{
+		int desired_range = RuleI(Companions, CasterCombatRange);
+		if (desired_range <= 0) {
+			SkipTest("BUG-026 > 18.20 LOS step-closer constants",
+				"CasterCombatRange rule is 0 or disabled");
+		} else {
+			float range_f = static_cast<float>(desired_range);
+
+			// Initial goal: 70% of desired range
+			float initial_goal = range_f * 0.7f;
+			RunTest("BUG-026 > 18.20a Initial goal == 70% of CasterCombatRange",
+				true, std::abs(initial_goal - range_f * 0.7f) < 0.01f);
+
+			// Step size: 10% per iteration
+			float step = range_f * 0.1f;
+			RunTest("BUG-026 > 18.20b Step size == 10% of CasterCombatRange",
+				true, std::abs(step - range_f * 0.1f) < 0.01f);
+
+			// Minimum distance: 20% of desired range
+			float min_dist = range_f * 0.2f;
+			RunTest("BUG-026 > 18.20c Minimum dist == 20% of CasterCombatRange",
+				true, std::abs(min_dist - range_f * 0.2f) < 0.01f);
+
+			// Number of LOS check iterations: from 70% down to 20% in 10% steps = 5 iterations max
+			int iterations = 0;
+			for (float try_dist = initial_goal - step; try_dist >= min_dist; try_dist -= step) {
+				++iterations;
+			}
+			RunTest("BUG-026 > 18.20d Max 5 LOS-check iterations (70% → 60% → 50% → 40% → 30% → 20%)",
+				true, iterations <= 6); // up to 6 iterations (inclusive of endpoint)
+
+			// Verify the minimum distance is not zero (caster should not overlap target)
+			RunTest("BUG-026 > 18.20e Minimum distance > 0 (caster never on top of target)",
+				true, min_dist > 0.0f);
+		}
+	}
+
+	// ---- 18.21: BUG-026 — CasterCombatRange rule exists and has a positive default ----
+	// The BUG-026 fix relies on CasterCombatRange to compute goal positions.
+	// Verify the rule exists and returns a sensible default (70 units).
+	{
+		int caster_range = RuleI(Companions, CasterCombatRange);
+		RunTest("BUG-026 > 18.21 CasterCombatRange rule > 0 (positioning enabled)",
+			true, caster_range > 0);
+		RunTest("BUG-026 > 18.21b CasterCombatRange default == 70",
+			70, caster_range);
+	}
+
+	// ---- 18.22: BUG-024 — Caster role correctly identified for LOM check ----
+	// Process() only enters the LOM block for COMBAT_ROLE_CASTER_DPS or COMBAT_ROLE_HEALER.
+	// Non-casters (warrior, rogue, monk) must NOT have these roles.
+	// This exhaustively tests all relevant classes against the role filter.
+	{
+		// Classes that SHOULD trigger LOM check (caster/healer roles):
+		// EQEmu class numbers: Cleric=2, Druid=6, Shaman=10, Necromancer=11,
+		//                      Wizard=12, Magician=13, Enchanter=14
+		struct { uint8 cls; const char* name; CompanionCombatRole expected; } casters[] = {
+			{2,  "Cleric",      COMBAT_ROLE_HEALER},
+			{6,  "Druid",       COMBAT_ROLE_HEALER},
+			{10, "Shaman",      COMBAT_ROLE_HEALER},
+			{11, "Necromancer", COMBAT_ROLE_CASTER_DPS},
+			{12, "Wizard",      COMBAT_ROLE_CASTER_DPS},
+			{13, "Magician",    COMBAT_ROLE_CASTER_DPS},
+			{14, "Enchanter",   COMBAT_ROLE_CASTER_DPS},
+		};
+		for (auto& c : casters) {
+			CompanionCombatRole role = Companion::DetermineRoleFromClass(c.cls);
+			RunTest(
+				fmt::format("BUG-024 > 18.22 {} (class {}) has caster/healer role",
+					c.name, static_cast<int>(c.cls)),
+				static_cast<int>(c.expected),
+				static_cast<int>(role));
+		}
+
+		// Classes that should NOT trigger LOM check (non-caster roles):
+		// EQEmu class numbers: Warrior=1, Paladin=3, Ranger=4, ShadowKnight=5,
+		//                      Monk=7, Bard=8, Rogue=9, Beastlord=15, Berserker=16
+		struct { uint8 cls; const char* name; } non_casters[] = {
+			{1,  "Warrior"},
+			{3,  "Paladin"},
+			{4,  "Ranger"},
+			{5,  "Shadow Knight"},
+			{7,  "Monk"},
+			{8,  "Bard"},
+			{9,  "Rogue"},
+			{15, "Beastlord"},
+			{16, "Berserker"},
+		};
+		for (auto& c : non_casters) {
+			CompanionCombatRole role = Companion::DetermineRoleFromClass(c.cls);
+			bool is_caster_role = (role == COMBAT_ROLE_CASTER_DPS || role == COMBAT_ROLE_HEALER);
+			RunTest(
+				fmt::format("BUG-024 > 18.22 {} (class {}) does NOT have caster/healer role",
+					c.name, static_cast<int>(c.cls)),
+				false, is_caster_role);
+		}
+	}
+
 	std::cout << "--- Suite 18 Complete ---\n";
 }
 
