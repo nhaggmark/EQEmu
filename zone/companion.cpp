@@ -66,6 +66,7 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	m_is_dismissed          = false;
 	m_depop                 = false;
 	m_is_zoning             = false;
+	m_lom_announced         = false;
 	m_recruited_level       = d->level;
 
 	// Spawn origin (set after recruitment, used for replacement NPC)
@@ -1140,8 +1141,11 @@ int64 Companion::CalcManaRegen()
 		return static_cast<int64>(regen);
 	}
 
-	// Sitting non-melee casters use the meditate formula
-	if (IsSitting()) {
+	// Non-melee casters use the meditate formula when sitting, or always when AlwaysMeditateRegen is on.
+	// BUG-027: AlwaysMeditateRegen (default true) bypasses the sitting requirement for small-group
+	// playability — companions are perpetually mana-starved otherwise. Set rule to false to restore
+	// authentic sit-to-meditate behavior.
+	if (RuleB(Companions, AlwaysMeditateRegen) || IsSitting()) {
 		if (GetArchetype() != Archetype::Melee) {
 			uint16 meditate = GetSkill(EQ::skills::SkillMeditate);
 			regen = (((meditate / 10) + (level - (level / 4))) / 4) + 4;
@@ -1307,17 +1311,56 @@ void Companion::UpdateCombatPositioning()
 			if (!RuleB(Companions, RogueBehindMob)) {
 				break;
 			}
-			// If not already behind the mob, plot a position behind it and RunTo
+			// BUG-023: Replace PlotPositionAroundTarget (which calculated position from the
+			// rogue's location, not the target's) with a direct geometric calculation.
+			// We compute a point directly behind the target using the target's heading so the
+			// rogue gets a straight line rather than a wide arc around the mob.
 			if (!BehindMob(target, GetX(), GetY())) {
-				float dest_x = 0.0f, dest_y = 0.0f, dest_z = 0.0f;
-				if (PlotPositionAroundTarget(target, dest_x, dest_y, dest_z, true)) {
+				// Backstab offset: step behind the target accounting for its model radius.
+				// Using target_size/2 + 2 units ensures we land just outside the model, not inside it.
+				float target_size     = target->GetSize() > 0.0f ? target->GetSize() : 5.0f;
+				float backstab_dist   = (target_size / 2.0f) + 2.0f;
+
+				// Target's heading in EQ uses 0–512 (north = 0, clockwise). Convert to radians.
+				// "Behind" the target is opposite its facing direction, so add pi.
+				float target_heading_rad = target->GetHeading() / 256.0f * static_cast<float>(M_PI);
+				float behind_dx = std::sin(target_heading_rad + static_cast<float>(M_PI));
+				float behind_dy = std::cos(target_heading_rad + static_cast<float>(M_PI));
+
+				// Candidate destination: directly behind the target at backstab_dist
+				float dest_x = target->GetX() + behind_dx * backstab_dist;
+				float dest_y = target->GetY() + behind_dy * backstab_dist;
+				float dest_z = target->GetZ();
+
+				bool valid_dest = false;
+				if (CheckPositioningLosFN(target, dest_x, dest_y, dest_z)) {
+					valid_dest = true;
+				} else {
+					// LOS failed (mob against a wall, etc.). Try +/- 30 degrees from directly behind.
+					constexpr float kOffsetRad = static_cast<float>(M_PI) / 6.0f; // 30 degrees
+					for (float offset : { kOffsetRad, -kOffsetRad }) {
+						float alt_dx = std::sin(target_heading_rad + static_cast<float>(M_PI) + offset);
+						float alt_dy = std::cos(target_heading_rad + static_cast<float>(M_PI) + offset);
+						float alt_x  = target->GetX() + alt_dx * backstab_dist;
+						float alt_y  = target->GetY() + alt_dy * backstab_dist;
+						if (CheckPositioningLosFN(target, alt_x, alt_y, dest_z)) {
+							dest_x     = alt_x;
+							dest_y     = alt_y;
+							valid_dest = true;
+							break;
+						}
+					}
+				}
+
+				if (valid_dest) {
 					float dist_sq = DistanceSquaredNoZ(m_Position, glm::vec4(dest_x, dest_y, dest_z, 0.0f));
 					if (dist_sq > 25.0f) { // >5 units — not already at destination
 						RunTo(dest_x, dest_y, dest_z);
 					}
-					// Hold position so the default pursue doesn't override our movement
 					m_hold_combat_position = true;
 				}
+				// If no valid LOS destination found, fall through to default melee behavior
+				// (m_hold_combat_position stays false, normal pursuit takes over).
 			}
 			// If already behind, let normal melee AI handle attacks (don't set hold)
 			break;
@@ -1351,14 +1394,24 @@ void Companion::UpdateCombatPositioning()
 			float range_sq = range_f * range_f;
 
 			if (dist_sq <= range_sq && dist_sq >= (range_f * 0.5f) * (range_f * 0.5f)) {
-				// Within the sweet spot (50%–100% of desired range) — hold position
+				// Within the sweet spot (50%–100% of desired range).
+				// BUG-026: Also check LOS from current position. If the target has moved
+				// behind an obstacle while we held position, re-evaluate by stepping closer.
+				if (!CheckLosFN(target)) {
+					// LOS lost while holding — fall through to "close up" logic below.
+					// Recalculate at 70% of desired range toward the target.
+					goto caster_reposition;
+				}
 				if (IsMoving()) {
 					StopNavigation();
 				}
 				FaceTarget();
 				m_hold_combat_position = true;
 			} else if (dist_sq > range_sq) {
-				// Too far from target — close to 70% of desired range
+				caster_reposition:
+				// Too far from target (or LOS lost in sweet spot) — close to 70% of desired range.
+				// BUG-026: Validate LOS at the goal position. If blocked, step closer in 10%
+				// increments until we find a position with LOS or hit the 20% minimum.
 				float desired_dist = range_f * 0.7f;
 				float dx = target->GetX() - GetX();
 				float dy = target->GetY() - GetY();
@@ -1366,13 +1419,43 @@ void Companion::UpdateCombatPositioning()
 				if (len > 0.0f) {
 					float nx = dx / len;
 					float ny = dy / len;
-					float goal_x = GetX() + nx * (std::sqrt(dist_sq) - desired_dist);
-					float goal_y = GetY() + ny * (std::sqrt(dist_sq) - desired_dist);
-					RunTo(goal_x, goal_y, target->GetZ());
+					float move_dist = std::sqrt(dist_sq) - desired_dist;
+					float goal_x = GetX() + nx * move_dist;
+					float goal_y = GetY() + ny * move_dist;
+					float goal_z = target->GetZ();
+					// LOS check at goal; if blocked step closer by 10% of desired_range each try
+					bool los_ok = CheckPositioningLosFN(target, goal_x, goal_y, goal_z);
+					if (!los_ok) {
+						float step = range_f * 0.1f;
+						for (float try_dist = desired_dist - step;
+						     try_dist >= range_f * 0.2f && !los_ok;
+						     try_dist -= step) {
+							float try_move = std::sqrt(dist_sq) - try_dist;
+							float try_x = GetX() + nx * try_move;
+							float try_y = GetY() + ny * try_move;
+							if (CheckPositioningLosFN(target, try_x, try_y, goal_z)) {
+								goal_x = try_x;
+								goal_y = try_y;
+								los_ok = true;
+							}
+						}
+					}
+					if (los_ok) {
+						RunTo(goal_x, goal_y, goal_z);
+					} else {
+						// No LOS-valid position found toward the target — hold current position
+						// and face target. Better to stand in place than run behind a wall.
+						if (IsMoving()) {
+							StopNavigation();
+						}
+						FaceTarget();
+					}
 				}
 				m_hold_combat_position = true;
 			} else {
-				// Too close (< 50% of desired range) — actively retreat to 70% of desired range
+				// Too close (< 50% of desired range) — actively retreat to 70% of desired range.
+				// BUG-026: LOS check the retreat destination. If blocked, stop at current position
+				// (retreating behind geometry is worse than staying close to the target).
 				float desired_dist = range_f * 0.7f;
 				float dx = GetX() - target->GetX();  // direction AWAY from target
 				float dy = GetY() - target->GetY();
@@ -1383,7 +1466,11 @@ void Companion::UpdateCombatPositioning()
 					float ny     = dy / len;
 					float goal_x = target->GetX() + nx * desired_dist;
 					float goal_y = target->GetY() + ny * desired_dist;
-					RunTo(goal_x, goal_y, GetZ());
+					if (CheckPositioningLosFN(target, goal_x, goal_y, GetZ())) {
+						RunTo(goal_x, goal_y, GetZ());
+					}
+					// If LOS fails at the retreat position, hold current position (we're close
+					// to the target but can see them, which is better than retreating to blindness).
 				} else {
 					// Overlapping with target — retreat toward the owner as a tiebreaker
 					Client* retreat_owner = GetCompanionOwner();
@@ -1394,7 +1481,9 @@ void Companion::UpdateCombatPositioning()
 						if (olen > 0.0f) {
 							float goal_x = target->GetX() + (ox / olen) * desired_dist;
 							float goal_y = target->GetY() + (oy / olen) * desired_dist;
-							RunTo(goal_x, goal_y, GetZ());
+							if (CheckPositioningLosFN(target, goal_x, goal_y, GetZ())) {
+								RunTo(goal_x, goal_y, GetZ());
+							}
 						}
 					}
 				}
@@ -1645,6 +1734,25 @@ bool Companion::Process()
 	    m_mana_report_timer.Check()) {
 		int mana_pct = static_cast<int>(GetManaRatio());
 		CompanionGroupSay(this, "Mana: %d%%", mana_pct);
+	}
+
+	// BUG-024: LOM announcement — casters/healers announce once when mana drops to or below
+	// the LOMThresholdPct rule (default 15%). The flag resets when mana recovers above the
+	// threshold, so the announcement fires again if mana drops back down (one per dip).
+	if (IsEngaged() &&
+	    (m_combat_role == COMBAT_ROLE_CASTER_DPS || m_combat_role == COMBAT_ROLE_HEALER) &&
+	    GetMaxMana() > 0) {
+		float lom_threshold = static_cast<float>(RuleI(Companions, LOMThresholdPct));
+		if (lom_threshold > 0.0f) {
+			if (GetManaRatio() <= lom_threshold) {
+				if (!m_lom_announced) {
+					CompanionGroupSay(this, "LOM");
+					m_lom_announced = true;
+				}
+			} else {
+				m_lom_announced = false;
+			}
+		}
 	}
 
 	// Update class-based combat positioning before NPC::Process() runs AI_Process().

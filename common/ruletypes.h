@@ -1240,6 +1240,13 @@ RULE_INT(Companions, ResistCapBase, 50,
 	"Phase 5: Base value for companion resist cap formula. "
 	"Cap = level * 5 + this value. At level 60 with default 50, cap is 350. "
 	"Set to 0 to disable resist capping entirely.")
+RULE_INT(Companions, LOMThresholdPct, 15,
+	"BUG-024: Mana percentage at or below which caster companions announce LOM in group chat. "
+	"Set to 0 to disable LOM announcements.")
+RULE_BOOL(Companions, AlwaysMeditateRegen, true,
+	"BUG-027: When true, companion casters always regenerate mana at meditation rates "
+	"regardless of sitting/standing/combat state. Fun-over-authenticity setting for "
+	"small-group play. Set to false to restore authentic sit-to-meditate behavior.")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY
