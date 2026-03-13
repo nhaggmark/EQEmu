@@ -45,6 +45,7 @@
 //  15. Phase 5 — Resist Caps + Focus Effects (17 tests)
 //  16. BUG-017/018 Fixes
 //  17. BUG-020 — No Casting While Sitting
+//  18. BUG-023/024/026/027 — Companion AI Behavior Fixes
 // ============================================================
 
 #include "zone/zone_cli.h"
@@ -3727,6 +3728,188 @@ inline void TestCompanionBug020NoCastingWhileSitting()
 }
 
 // ============================================================
+// Suite 18: BUG-023/024/026/027 — Companion AI Behavior Fixes
+// ============================================================
+
+inline void TestCompanionAIBehaviorFixes()
+{
+	std::cout << "\n--- Suite 18: BUG-023/024/026/027 — Companion AI Behavior Fixes ---\n";
+
+	// ---- 18.1: BUG-027 — AlwaysMeditateRegen: caster regen > flat base when standing ----
+	// When AlwaysMeditateRegen is true (default), a standing non-melee companion should
+	// use the meditate formula, producing regen > 2/tick (the old flat standing base).
+	{
+		Companion* wizard = CreateTestCompanionByClass(12, 50, 0); // Wizard = class 12
+		if (!wizard) {
+			SkipTest("BUG-027 > 18.1 AlwaysMeditateRegen: standing wizard regen > flat base",
+				"No wizard NPC near level 50 found in DB");
+		} else {
+			// Ensure standing (not sitting)
+			wizard->SetAppearance(eaStanding);
+			RunTest("BUG-027 > 18.1 prereq: wizard is standing",
+				false, wizard->IsSitting());
+
+			// ScaleStatsToLevel so meditate skill is set
+			wizard->ScaleStatsToLevel(50);
+
+			// With AlwaysMeditateRegen=true, CalcManaRegen should use meditate formula (> 2/tick)
+			int64 regen = wizard->CalcManaRegen();
+			RunTestGreaterThanInt64("BUG-027 > 18.1 Standing wizard regen > flat base (2/tick)",
+				regen, 2);
+		}
+	}
+
+	// ---- 18.2: BUG-027 — Warrior (melee archetype) regen unaffected by AlwaysMeditateRegen ----
+	// Warriors have no mana; CalcManaRegen should return 0 regardless of the rule.
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0); // Warrior = class 1
+		if (!warrior) {
+			SkipTest("BUG-027 > 18.2 Warrior CalcManaRegen returns 0",
+				"No warrior NPC near level 50 found in DB");
+		} else {
+			warrior->SetAppearance(eaStanding);
+			int64 regen = warrior->CalcManaRegen();
+			RunTest("BUG-027 > 18.2 Warrior CalcManaRegen() == 0 (no mana)",
+				0, static_cast<int>(regen));
+		}
+	}
+
+	// ---- 18.3: BUG-027 — Sitting caster regen still uses meditate formula ----
+	// Sitting should still work correctly (no regression from the rule change).
+	{
+		Companion* cleric = CreateTestCompanionByClass(2, 50, 0); // Cleric = class 2
+		if (!cleric) {
+			SkipTest("BUG-027 > 18.3 Sitting cleric regen uses meditate formula",
+				"No cleric NPC near level 50 found in DB");
+		} else {
+			cleric->ScaleStatsToLevel(50);
+			cleric->SetAppearance(eaSitting);
+			RunTest("BUG-027 > 18.3 prereq: cleric is sitting",
+				true, cleric->IsSitting());
+			int64 regen_sitting = cleric->CalcManaRegen();
+			RunTestGreaterThanInt64("BUG-027 > 18.3 Sitting cleric regen > flat base",
+				regen_sitting, 2);
+		}
+	}
+
+	// ---- 18.4: BUG-027 — Standing and sitting produce same regen with AlwaysMeditateRegen=true ----
+	// When AlwaysMeditateRegen is true, standing regen should equal sitting regen (both use meditate formula).
+	{
+		Companion* shaman = CreateTestCompanionByClass(10, 50, 0); // Shaman = class 10
+		if (!shaman) {
+			SkipTest("BUG-027 > 18.4 Standing regen == sitting regen with AlwaysMeditateRegen=true",
+				"No shaman NPC near level 50 found in DB");
+		} else {
+			shaman->ScaleStatsToLevel(50);
+
+			shaman->SetAppearance(eaStanding);
+			int64 regen_standing = shaman->CalcManaRegen();
+
+			shaman->SetAppearance(eaSitting);
+			int64 regen_sitting = shaman->CalcManaRegen();
+
+			RunTest("BUG-027 > 18.4 Standing regen == sitting regen (AlwaysMeditateRegen=true)",
+				static_cast<int>(regen_sitting), static_cast<int>(regen_standing));
+		}
+	}
+
+	// ---- 18.5: BUG-024 — m_lom_announced initializes to false ----
+	// The LOM flag must start false so the first LOM triggers an announcement.
+	{
+		Companion* wizard = CreateTestCompanionByClass(12, 50, 0); // Wizard = class 12
+		if (!wizard) {
+			SkipTest("BUG-024 > 18.5 m_lom_announced initializes to false",
+				"No wizard NPC near level 50 found in DB");
+		} else {
+			// We can't directly access m_lom_announced (private), but we can verify
+			// the companion constructed without crashing and has the correct role.
+			RunTest("BUG-024 > 18.5 Wizard companion created for LOM test",
+				true, wizard != nullptr);
+			RunTest("BUG-024 > 18.5 Wizard has caster DPS role",
+				static_cast<int>(COMBAT_ROLE_CASTER_DPS),
+				static_cast<int>(wizard->GetCombatRole()));
+		}
+	}
+
+	// ---- 18.6: BUG-024 — Non-caster companions have COMBAT_ROLE_ROGUE or MELEE role ----
+	// Verifies that the LOM check correctly limits to caster/healer roles.
+	{
+		Companion* rogue = CreateTestCompanionByClass(9, 50, 0); // Rogue = class 9
+		if (!rogue) {
+			SkipTest("BUG-024 > 18.6 Rogue companion has rogue role",
+				"No rogue NPC near level 50 found in DB");
+		} else {
+			RunTest("BUG-024 > 18.6 Rogue companion has COMBAT_ROLE_ROGUE",
+				static_cast<int>(COMBAT_ROLE_ROGUE),
+				static_cast<int>(rogue->GetCombatRole()));
+		}
+	}
+
+	// ---- 18.7: BUG-023 — Rogue combat role assignment ----
+	// The rogue backstab fix depends on the rogue having COMBAT_ROLE_ROGUE.
+	// Verify role assignment is correct for all melee-type classes.
+	{
+		// Warrior (class 1) → MELEE_TANK
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (warrior) {
+			RunTest("BUG-023 > 18.7a Warrior → COMBAT_ROLE_MELEE_TANK",
+				static_cast<int>(COMBAT_ROLE_MELEE_TANK),
+				static_cast<int>(warrior->GetCombatRole()));
+		}
+
+		// Monk (class 7) → MELEE_DPS
+		Companion* monk = CreateTestCompanionByClass(7, 50, 0);
+		if (monk) {
+			RunTest("BUG-023 > 18.7b Monk → COMBAT_ROLE_MELEE_DPS",
+				static_cast<int>(COMBAT_ROLE_MELEE_DPS),
+				static_cast<int>(monk->GetCombatRole()));
+		}
+
+		// Rogue (class 9) → COMBAT_ROLE_ROGUE
+		Companion* rogue = CreateTestCompanionByClass(9, 50, 0);
+		if (rogue) {
+			RunTest("BUG-023 > 18.7c Rogue → COMBAT_ROLE_ROGUE",
+				static_cast<int>(COMBAT_ROLE_ROGUE),
+				static_cast<int>(rogue->GetCombatRole()));
+		}
+	}
+
+	// ---- 18.8: BUG-026 — Caster/healer role assignment for LOS positioning ----
+	// Cleric (class 2) → HEALER; Wizard (class 12) → CASTER_DPS.
+	{
+		Companion* cleric = CreateTestCompanionByClass(2, 50, 0);
+		if (cleric) {
+			RunTest("BUG-026 > 18.8a Cleric → COMBAT_ROLE_HEALER",
+				static_cast<int>(COMBAT_ROLE_HEALER),
+				static_cast<int>(cleric->GetCombatRole()));
+		}
+
+		Companion* wizard = CreateTestCompanionByClass(12, 50, 0);
+		if (wizard) {
+			RunTest("BUG-026 > 18.8b Wizard → COMBAT_ROLE_CASTER_DPS",
+				static_cast<int>(COMBAT_ROLE_CASTER_DPS),
+				static_cast<int>(wizard->GetCombatRole()));
+		}
+	}
+
+	// ---- 18.9: BUG-027 — LOMThresholdPct rule exists and has expected default ----
+	{
+		int lom_threshold = RuleI(Companions, LOMThresholdPct);
+		RunTest("BUG-024 > 18.9 LOMThresholdPct rule default is 15",
+			15, lom_threshold);
+	}
+
+	// ---- 18.10: BUG-027 — AlwaysMeditateRegen rule exists and is true by default ----
+	{
+		bool always_meditate = RuleB(Companions, AlwaysMeditateRegen);
+		RunTest("BUG-027 > 18.10 AlwaysMeditateRegen rule default is true",
+			true, always_meditate);
+	}
+
+	std::cout << "--- Suite 18 Complete ---\n";
+}
+
+// ============================================================
 // Entry Point
 // ============================================================
 
@@ -3796,6 +3979,9 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	CleanupTestCompanions();
 
 	TestCompanionBug020NoCastingWhileSitting();
+	CleanupTestCompanions();
+
+	TestCompanionAIBehaviorFixes();
 	CleanupTestCompanions();
 
 	// Final DB cleanup

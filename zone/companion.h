@@ -480,6 +480,7 @@ private:
 	bool     m_is_dismissed;         // true when voluntarily dismissed; enables re-recruitment lookup
 	bool     m_depop;                 // true when this entity should be cleaned up
 	bool     m_is_zoning;             // re-entrancy guard: true during Zone() to prevent double-depop (BUG-008)
+	bool     m_lom_announced;         // BUG-024: true once LOM is announced; reset when mana recovers above threshold
 
 	// Spawn origin (for replacement NPC, dismissal return)
 	uint32   m_spawn2_id;
