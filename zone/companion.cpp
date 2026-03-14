@@ -211,6 +211,19 @@ Companion* Companion::CreateFromNPC(Client* owner, NPC* source_npc)
 			return nullptr;
 		}
 
+		// Restore HP/mana to max for re-recruited companions.
+		// Load() faithfully restores cur_hp from the DB — for companions that died,
+		// cur_hp=0 is stored in the DB and Load() skips SetHP() (due to the `if
+		// (cd.cur_hp > 0)` guard). Without this, a re-recruited dead companion would
+		// spawn with whatever HP the NPC constructor left (base NPC max_hp before
+		// ScaleStatsToLevel raised max_hp), which is lower than GetMaxHP().
+		// Spawn() does not call RestoreHealth(), so we must set here.
+		// We use SetHP/SetMana directly (not RestoreHealth/RestoreMana) because
+		// SendHPUpdate() in RestoreHealth() requires an entity ID, which is only
+		// assigned when Spawn() adds the companion to the entity list.
+		companion->SetHP(companion->GetMaxHP());
+		companion->SetMana(companion->GetMaxMana());
+
 		// Clear dismissed/suspended flags and activate — companion is active again.
 		// Reset both C++ members and the DB record so Save() writes the correct state
 		// on the next save without re-introducing stale is_dismissed/is_suspended values.
@@ -221,6 +234,15 @@ Companion* Companion::CreateFromNPC(Client* owner, NPC* source_npc)
 				"UPDATE `companion_data` SET `is_dismissed` = 0, `is_suspended` = 0 WHERE `id` = {}",
 				existing[0].id
 			)
+		);
+
+		// Belt-and-suspenders cooldown cleanup: delete any stale cooldown data_bucket
+		// so Lua re-recruitment detection is never blocked by a leftover cooldown from
+		// a prior failed first-time attempt. Lua also deletes this on success, but C++
+		// ensures no stale cooldown survives if Lua is bypassed or a code path changes.
+		DataBucket::DeleteData(
+			&database,
+			fmt::format("companion_cooldown_{}_{}", source_npc->GetNPCTypeID(), owner->CharacterID())
 		);
 
 		LogInfo(
