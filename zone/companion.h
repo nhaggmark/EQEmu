@@ -333,6 +333,27 @@ public:
 	void ApplyStatScalePct();
 
 	// -------------------------------------------------------
+	// Skill initialization (GAP-03)
+	// -------------------------------------------------------
+	// Sets defensive skills (Defense, Parry, Riposte, Dodge, Block, Meditate)
+	// from the SkillCaps table for this companion's class and current level.
+	// Called from ScaleStatsToLevel() and the constructor so skills are always
+	// set correctly at construction and on level-up.
+	void SetDefensiveSkillsFromCaps();
+
+	// -------------------------------------------------------
+	// Unarmed damage override (GAP-06)
+	// -------------------------------------------------------
+	// Returns class-appropriate hand-to-hand damage for unarmed companions.
+	// Applies a class-based multiplier to level-scaled base damage:
+	//   Casters (Wizard/Mage/Enc/Nec): ~40%
+	//   Priests (Cleric/Druid/Shaman):  ~60%
+	//   Hybrids (Pala/SK/Ranger/Bard/BST): ~80%
+	//   Melee (War/Monk/Rogue/Bst):    100%
+	// Always returns at least 1 to allow hitting.
+	virtual int GetHandToHandDamage(void) override;
+
+	// -------------------------------------------------------
 	// Equipment (Task 21)
 	// -------------------------------------------------------
 	bool GiveItem(uint32 item_id, int16 slot);

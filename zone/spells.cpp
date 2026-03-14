@@ -829,13 +829,13 @@ bool Mob::DoCastingChecksOnTarget(bool check_on_casting, int32 spell_id, Mob *sp
 	*/
 	if (!ignore_on_casting) {
 		if (spells[spell_id].pcnpc_only_flag && spells[spell_id].target_type != ST_AETargetHateList && spells[spell_id].target_type != ST_HateList) {
-			if (spells[spell_id].pcnpc_only_flag == PCNPCOnlyFlagType::PC && !spell_target->IsClient() && !spell_target->IsMerc() && !spell_target->IsBot()) {
+			if (spells[spell_id].pcnpc_only_flag == PCNPCOnlyFlagType::PC && !spell_target->IsClient() && !spell_target->IsMerc() && !spell_target->IsBot() && !spell_target->IsCompanion()) {
 				if (check_on_casting) {
 					Message(Chat::SpellFailure, "This spell only works on other PCs");
 				}
 				return false;
 			}
-			else if (spells[spell_id].pcnpc_only_flag == PCNPCOnlyFlagType::NPC && (spell_target->IsClient() || spell_target->IsMerc() || spell_target->IsBot())) {
+			else if (spells[spell_id].pcnpc_only_flag == PCNPCOnlyFlagType::NPC && (spell_target->IsClient() || spell_target->IsMerc() || spell_target->IsBot() || spell_target->IsCompanion())) {
 				if (check_on_casting) {
 					Message(Chat::SpellFailure, "This spell only works on NPCs.");
 				}
