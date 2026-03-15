@@ -48,6 +48,7 @@
 //  18. BUG-023/024/026/027 — Companion AI Behavior Fixes
 //  19. Authenticity Fixes (GAP-01/02/03/04/06)
 //  20. Re-recruitment: HP/mana restoration and DataBucket cooldown cleanup
+//  21. BUG-028: Companion::Death() hardening — entity id=0 fallback + Process() safety net
 // ============================================================
 
 #include "zone/zone_cli.h"
@@ -5744,6 +5745,268 @@ inline void TestCompanionReRecruitmentHP()
 }
 
 // ============================================================
+// Suite 21: BUG-028 — Companion::Death() Hardening
+//
+// Verifies that the companion_data record is never silently lost when
+// Companion::Death() is called with a corrupted entity state. Three
+// scenarios are tested:
+//
+//   21.1 Save() inserts a new record and returns a non-zero companion_id.
+//   21.2 SetSuspended(true) sets the in-memory flag correctly.
+//   21.3 Save() after SetSuspended(true) persists is_suspended=1 to the DB.
+//   21.4 The direct SQL fallback path (used when entity id=0) sets
+//        is_suspended=1 in the DB when the ORM path is bypassed.
+//   21.5 The Process() safety net: a companion with HP=0, not suspended,
+//        and a valid companion_id has m_suspended forced to true and the
+//        DB record updated with is_suspended=1 on the next Process() tick.
+// ============================================================
+
+inline void TestCompanionDeathHardening()
+{
+	std::cout << "\n--- Suite 21: BUG-028 Death Hardening ---\n";
+
+	// Test sentinel: use owner_id=99998 so we can clean up safely without
+	// touching the owner_id=0 rows that other suites rely on.
+	// CleanupTestCompanionDB() only deletes owner_id=0; we do our own cleanup here.
+	const uint32 TEST_OWNER_ID = 99998;
+	// Clean up any leftover rows from a previous crashed run
+	database.QueryDatabase(
+		fmt::format("DELETE FROM `companion_data` WHERE `owner_id`={}", TEST_OWNER_ID));
+
+	// ------------------------------------------------------------
+	// 21.1: Save() inserts a new companion_data record
+	//
+	// A freshly-constructed companion has m_companion_id=0. Calling
+	// Save() for the first time should INSERT a new row and set
+	// m_companion_id to the new primary key.
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 20, 0);
+		if (!comp) {
+			SkipTest("21.1 Save() inserts new companion_data row", "No warrior NPC found");
+		} else {
+			// Set a non-zero owner_id so Save() does not early-return
+			comp->SetOwnerCharacterID(TEST_OWNER_ID);
+
+			// Pre-state: companion_id should be 0 before first save
+			RunTest("21.1 pre: companion_id == 0 before Save()",
+				0, static_cast<int>(comp->GetCompanionID()));
+
+			bool saved = comp->Save();
+			RunTest("21.1 Save() returns true", true, saved);
+			RunTest("21.1 companion_id > 0 after Save()",
+				true, comp->GetCompanionID() > 0);
+
+			// Verify row exists in DB
+			if (comp->GetCompanionID() > 0) {
+				auto results = database.QueryDatabase(
+					fmt::format("SELECT `is_suspended` FROM `companion_data` WHERE `id`={} LIMIT 1",
+						comp->GetCompanionID())
+				);
+				RunTest("21.1 DB row exists after Save()",
+					true, results.Success() && results.RowCount() > 0);
+				if (results.Success() && results.RowCount() > 0) {
+					auto row = results.begin();
+					// Table default is is_suspended=1; Save() explicitly writes 0 for a live companion
+					int is_suspended = atoi(row[0]);
+					RunTest("21.1 is_suspended=0 in fresh save (companion not yet dead)", 0, is_suspended);
+				}
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 21.2: SetSuspended(true) sets in-memory flag
+	//
+	// Verifies the simple in-memory setter/getter works — prerequisite
+	// for all subsequent death-path tests.
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 20, 0);
+		if (!comp) {
+			SkipTest("21.2 SetSuspended(true) sets IsSuspended()", "No warrior NPC found");
+		} else {
+			RunTest("21.2 pre: IsSuspended() == false by default", false, comp->IsSuspended());
+			comp->SetSuspended(true);
+			RunTest("21.2 IsSuspended() == true after SetSuspended(true)", true, comp->IsSuspended());
+			comp->SetSuspended(false);
+			RunTest("21.2 IsSuspended() == false after SetSuspended(false)", false, comp->IsSuspended());
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 21.3: Save() after SetSuspended(true) persists is_suspended=1
+	//
+	// This is the normal Death() path: SetSuspended(true) + Save().
+	// Verifies the ORM round-trip writes is_suspended=1 to the DB.
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(2, 25, 0); // cleric
+		if (!comp) {
+			SkipTest("21.3 Save() after SetSuspended(true) writes is_suspended=1", "No cleric NPC found");
+		} else {
+			comp->SetOwnerCharacterID(TEST_OWNER_ID);
+
+			// First save to get a companion_id
+			bool first_save = comp->Save();
+			if (!first_save || comp->GetCompanionID() == 0) {
+				SkipTest("21.3 Save() after SetSuspended(true) writes is_suspended=1",
+					"Initial Save() failed — cannot test UPDATE path");
+			} else {
+				uint32 cid = comp->GetCompanionID();
+
+				// Simulate Death(): suspend and save
+				comp->SetSuspended(true);
+				bool death_save = comp->Save();
+				RunTest("21.3 Save() after SetSuspended(true) returns true", true, death_save);
+
+				// Verify is_suspended=1 in DB
+				auto results = database.QueryDatabase(
+					fmt::format("SELECT `is_suspended` FROM `companion_data` WHERE `id`={} LIMIT 1", cid)
+				);
+				RunTest("21.3 DB row still exists after suspend save",
+					true, results.Success() && results.RowCount() > 0);
+				if (results.Success() && results.RowCount() > 0) {
+					auto row = results.begin();
+					int is_suspended = atoi(row[0]);
+					RunTest("21.3 is_suspended=1 in DB after Death() ORM path", 1, is_suspended);
+				}
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 21.4: Direct SQL fallback path sets is_suspended=1
+	//
+	// Simulates the BUG-028 scenario: a companion has a valid companion_id
+	// in the DB but its entity is corrupted (id=0 at death time). The fix
+	// bypasses the ORM and uses a direct targeted UPDATE. This test calls
+	// the same SQL as the fallback to verify the DB is updated correctly.
+	//
+	// We cannot easily force GetID()==0 in tests (entity_list assigns IDs
+	// at AddNPC), so we test the SQL query directly and verify its effect.
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 30, 0);
+		if (!comp) {
+			SkipTest("21.4 Direct SQL fallback sets is_suspended=1", "No warrior NPC found");
+		} else {
+			comp->SetOwnerCharacterID(TEST_OWNER_ID);
+
+			// Save to create a record with is_suspended=0
+			bool first_save = comp->Save();
+			if (!first_save || comp->GetCompanionID() == 0) {
+				SkipTest("21.4 Direct SQL fallback sets is_suspended=1",
+					"Initial Save() failed");
+			} else {
+				uint32 cid = comp->GetCompanionID();
+
+				// Verify initial state: is_suspended=0 (Save() wrote it)
+				auto pre_check = database.QueryDatabase(
+					fmt::format("SELECT `is_suspended`, `times_died` FROM `companion_data` WHERE `id`={} LIMIT 1", cid)
+				);
+				int pre_suspended = 0;
+				int pre_died = 0;
+				if (pre_check.Success() && pre_check.RowCount() > 0) {
+					auto row = pre_check.begin();
+					pre_suspended = atoi(row[0]);
+					pre_died = atoi(row[1]);
+				}
+				RunTest("21.4 pre: is_suspended=0 before fallback", 0, pre_suspended);
+
+				// Execute the same SQL as the BUG-028 fallback in Companion::Death()
+				std::string fallback_query = fmt::format(
+					"UPDATE `companion_data` SET `is_suspended`=1, `times_died`=`times_died`+1 "
+					"WHERE `id`={} LIMIT 1",
+					cid);
+				database.QueryDatabase(fallback_query);
+
+				// Verify is_suspended=1 and times_died incremented
+				auto post_check = database.QueryDatabase(
+					fmt::format("SELECT `is_suspended`, `times_died` FROM `companion_data` WHERE `id`={} LIMIT 1", cid)
+				);
+				if (post_check.Success() && post_check.RowCount() > 0) {
+					auto row = post_check.begin();
+					RunTest("21.4 direct SQL fallback: is_suspended=1 in DB",
+						1, atoi(row[0]));
+					RunTest("21.4 direct SQL fallback: times_died incremented",
+						pre_died + 1, atoi(row[1]));
+				} else {
+					std::cerr << "[FAIL] 21.4 Could not verify DB row after fallback query\n";
+					std::exit(1);
+				}
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 21.5: Process() safety net forces suspension on HP=0 + !suspended
+	//
+	// Simulates the window where Death() silently failed: HP=0, not
+	// suspended, but m_companion_id is valid. The safety net in
+	// Process() should detect this and force m_suspended=true plus
+	// write is_suspended=1 to the DB.
+	//
+	// We save the companion first, then clear the suspended flag and
+	// drop HP to 0, then call Process() once and verify the state.
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 20, 0);
+		if (!comp) {
+			SkipTest("21.5 Process() safety net: HP=0 unsuspended forces DB save", "No warrior NPC found");
+		} else {
+			comp->SetOwnerCharacterID(TEST_OWNER_ID);
+
+			// Save to create a DB record
+			bool first_save = comp->Save();
+			if (!first_save || comp->GetCompanionID() == 0) {
+				SkipTest("21.5 Process() safety net: HP=0 unsuspended forces DB save",
+					"Initial Save() failed");
+			} else {
+				uint32 cid = comp->GetCompanionID();
+
+				// Set up the bad state: HP=0, not suspended
+				comp->SetHP(0);
+				comp->SetSuspended(false);
+				RunTest("21.5 pre: GetHP() == 0", 0, static_cast<int>(comp->GetHP()));
+				RunTest("21.5 pre: IsSuspended() == false", false, comp->IsSuspended());
+
+				// Call Process() — safety net should fire
+				comp->Process();
+
+				// Verify in-memory flag was set
+				RunTest("21.5 IsSuspended() == true after Process() safety net fires",
+					true, comp->IsSuspended());
+
+				// Verify DB was updated
+				auto results = database.QueryDatabase(
+					fmt::format("SELECT `is_suspended` FROM `companion_data` WHERE `id`={} LIMIT 1", cid)
+				);
+				if (results.Success() && results.RowCount() > 0) {
+					auto row = results.begin();
+					RunTest("21.5 is_suspended=1 in DB after Process() safety net",
+						1, atoi(row[0]));
+				} else {
+					std::cerr << "[FAIL] 21.5 Could not verify DB row after Process() safety net\n";
+					std::exit(1);
+				}
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// Clean up all test rows for this suite
+	database.QueryDatabase(
+		fmt::format("DELETE FROM `companion_data` WHERE `owner_id`={}", TEST_OWNER_ID));
+
+	std::cout << "--- Suite 21 Complete ---\n";
+}
+
+// ============================================================
 // Entry Point
 // ============================================================
 
@@ -5822,6 +6085,9 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	CleanupTestCompanions();
 
 	TestCompanionReRecruitmentHP();
+	CleanupTestCompanions();
+
+	TestCompanionDeathHardening();
 	CleanupTestCompanions();
 
 	// Final DB cleanup

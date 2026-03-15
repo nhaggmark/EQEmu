@@ -588,11 +588,47 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 		// Mark companion as suspended (dead) in DB. Explicitly save equipment before
 		// the entity is cleaned up so the companion_inventories rows always reflect the
 		// current gear at the moment of death. (BUG-012)
-		SetSuspended(true);
-		m_times_died++;
-		UpdateTimeActive(); // stop accruing active time at death
-		SaveEquipment();
-		Save();
+		//
+		// BUG-028: If the entity ID is already 0 at death time, the ORM Save() path
+		// uses stale or invalid entity state (GetX/GetY/GetZ all garbage for a
+		// zero-ID entity) and may silently fail, losing the companion_data record.
+		// Guard: if entity ID is 0 and we have a known companion_id, skip the full
+		// ORM write and use a direct targeted UPDATE to guarantee is_suspended=1
+		// is persisted. The m_companion_id member is a plain integer that survives
+		// entity list corruption.
+		if (GetID() == 0 && m_companion_id > 0) {
+			LogWarning("Companion [{}] Death() called with entity id=0 — "
+			           "using direct SQL fallback to save suspended state (companion_id={})",
+			           GetCleanName(), m_companion_id);
+			m_suspended = true;
+			m_times_died++;
+			// Direct targeted UPDATE — does not rely on any entity state
+			std::string fallback_query = fmt::format(
+				"UPDATE `companion_data` SET `is_suspended`=1, `times_died`=`times_died`+1 "
+				"WHERE `id`={} LIMIT 1",
+				m_companion_id);
+			database.QueryDatabase(fallback_query);
+		} else {
+			// Normal path: entity is in a valid state
+			SetSuspended(true);
+			m_times_died++;
+			UpdateTimeActive(); // stop accruing active time at death
+			SaveEquipment();
+			if (!Save()) {
+				// ORM path failed — use direct SQL as a last-resort fallback so the
+				// companion_data record is never silently lost. (BUG-028 fallback layer 2)
+				if (m_companion_id > 0) {
+					LogWarning("Companion [{}] Death() Save() failed — "
+					           "using direct SQL fallback (companion_id={})",
+					           GetCleanName(), m_companion_id);
+					std::string fallback_query = fmt::format(
+						"UPDATE `companion_data` SET `is_suspended`=1, `times_died`=`times_died`+1 "
+						"WHERE `id`={} LIMIT 1",
+						m_companion_id);
+					database.QueryDatabase(fallback_query);
+				}
+			}
+		}
 
 		// Start the despawn timer — if not resurrected, auto-dismiss
 		m_death_despawn_timer.Start();
@@ -1685,6 +1721,24 @@ void Companion::UpdateCombatPositioning()
 
 bool Companion::Process()
 {
+	// BUG-028 safety net: if HP has dropped to 0 but Death() never properly suspended
+	// this companion (e.g. Death() ran with entity id=0 and the save silently failed),
+	// catch that state here and force an emergency save. This prevents the silent data
+	// loss window between HP hitting 0 and the entity being cleaned up.
+	// Only fires when m_companion_id is known (i.e. the companion has been saved before).
+	if (GetHP() <= 0 && !m_suspended && m_companion_id > 0) {
+		LogWarning("Companion [{}] Process(): HP=0 but not suspended — "
+		           "forcing emergency save (companion_id={})",
+		           GetCleanName(), m_companion_id);
+		m_suspended = true;
+		m_times_died++;
+		std::string safety_query = fmt::format(
+			"UPDATE `companion_data` SET `is_suspended`=1, `times_died`=`times_died`+1 "
+			"WHERE `id`={} LIMIT 1",
+			m_companion_id);
+		database.QueryDatabase(safety_query);
+	}
+
 	// Check death despawn timer
 	if (m_death_despawn_timer.Enabled() && m_death_despawn_timer.Check()) {
 		LogInfo("Companion [{}] death despawn timer fired — marking dismissed", GetName());
