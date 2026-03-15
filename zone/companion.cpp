@@ -141,13 +141,23 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 		m_evade_timer.Disable();
 	}
 
-	// Apply global stat scale percentage
+	// NEW-03: Apply class-based stat multipliers at construction time so fresh-recruited
+	// companions have class-differentiated stats from the moment they are created.
+	// Without this call, a level-50 warrior and wizard have identical base stats until
+	// the first level-up fires ScaleStatsToLevel(). Called before ApplyStatScalePct()
+	// so that the global scale percentage is applied on top of the class-differentiated
+	// stats rather than being overwritten by ScaleStatsToLevel()'s m_base_* reads.
+	// m_recruited_level is already set from d->level above.
+	ScaleStatsToLevel(d->level);
+
+	// Apply global stat scale percentage on top of the class-scaled stats.
+	// ScaleStatsToLevel() sets stats from m_base_* — ApplyStatScalePct() then
+	// multiplies those results by the global rule percentage (e.g. 80% for tuning).
 	ApplyStatScalePct();
 
-	// GAP-03: Initialize class-appropriate defensive skills from SkillCaps table.
-	// Must be called after SetLevel() has been applied (level comes from the NPCType).
-	SetDefensiveSkillsFromCaps();
-
+	// NOTE: ScaleStatsToLevel() calls SetDefensiveSkillsFromCaps() and CalcBonuses()
+	// internally. ApplyStatScalePct() does not call CalcBonuses(). We call it once
+	// more here to ensure bonuses reflect the final stat values after both scale passes.
 	CalcBonuses();
 }
 
@@ -1749,6 +1759,10 @@ bool Companion::Process()
 		           GetCleanName(), m_companion_id);
 		m_suspended = true;
 		m_times_died++;
+		// NEW-05: Accrue elapsed session time before persisting so that time_active
+		// is not understated for companions dying through this safety net path.
+		// Death() does this correctly; mirroring that behavior here ensures parity.
+		UpdateTimeActive();
 		std::string safety_query = fmt::format(
 			"UPDATE `companion_data` SET `is_suspended`=1, `times_died`=`times_died`+1 "
 			"WHERE `id`={} LIMIT 1",
