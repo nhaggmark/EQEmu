@@ -239,6 +239,40 @@ void Lua_Companion::SetFollowCanRun(bool v)
 	self->SetFollowCanRun(v);
 }
 
+int Lua_Companion::GetFollowID()
+{
+	Lua_Safe_Call_Int();
+	return self->GetFollowID();
+}
+
+int Lua_Companion::GetFollowDistance()
+{
+	Lua_Safe_Call_Int();
+	return self->GetFollowDistance();
+}
+
+bool Lua_Companion::GetFollowCanRun()
+{
+	Lua_Safe_Call_Bool();
+	return self->GetFollowCanRun();
+}
+
+bool Lua_Companion::IsGuarding()
+{
+	Lua_Safe_Call_Bool();
+	return self->IsGuarding();
+}
+
+// -------------------------------------------------------
+// NPC methods exposed on Lua_Companion
+// -------------------------------------------------------
+
+int Lua_Companion::GetPrimaryFaction()
+{
+	Lua_Safe_Call_Int();
+	return self->GetPrimaryFaction();
+}
+
 // SetGuardMode(true)  — stop following and hold current position via NPC guard point.
 // SetGuardMode(false) — clear guard point and resume following the companion's owner.
 //
@@ -293,6 +327,11 @@ luabind::scope lua_register_companion() {
 	.def("GiveItem",               &Lua_Companion::GiveItem)
 	.def("GiveSlot",               &Lua_Companion::GiveSlot)
 	.def("Save",                   &Lua_Companion::Save)
+	.def("GetFollowCanRun",        &Lua_Companion::GetFollowCanRun)
+	.def("GetFollowDistance",      &Lua_Companion::GetFollowDistance)
+	.def("GetFollowID",            &Lua_Companion::GetFollowID)
+	.def("GetPrimaryFaction",      &Lua_Companion::GetPrimaryFaction)
+	.def("IsGuarding",             &Lua_Companion::IsGuarding)
 	.def("SetFollowCanRun",        &Lua_Companion::SetFollowCanRun)
 	.def("SetFollowDistance",      &Lua_Companion::SetFollowDistance)
 	.def("SetFollowID",            &Lua_Companion::SetFollowID)

@@ -463,15 +463,32 @@ void Companion::ApplyStatScalePct()
 
 void Companion::SetDefensiveSkillsFromCaps()
 {
-	// Key defensive and utility skills that every companion class should have.
+	// Offensive, defensive, and utility skills for companion combat.
 	// We only set skills that the class can actually learn (SkillCaps returns 0 for
 	// skills the class doesn't have). This mirrors Bot::FinishCombat() skill init.
-	static const EQ::skills::SkillType defensive_skills[] = {
+	//
+	// Weapon skills and SkillOffense are included so that compute_tohit() in
+	// attack.cpp returns reasonable values. Without these, companions have
+	// tohit = 7 + accuracy_rating which produces very low hit rates at low levels.
+	static const EQ::skills::SkillType combat_skills[] = {
+		// Offensive — used by compute_tohit() and offense()
+		EQ::skills::SkillOffense,
+		EQ::skills::Skill1HSlashing,
+		EQ::skills::Skill1HBlunt,
+		EQ::skills::Skill1HPiercing,
+		EQ::skills::Skill2HSlashing,
+		EQ::skills::Skill2HBlunt,
+		EQ::skills::Skill2HPiercing,
+		EQ::skills::SkillHandtoHand,
+		EQ::skills::SkillArchery,
+		EQ::skills::SkillThrowing,
+		// Defensive — used by avoidance checks
 		EQ::skills::SkillDefense,
 		EQ::skills::SkillParry,
 		EQ::skills::SkillRiposte,
 		EQ::skills::SkillDodge,
 		EQ::skills::SkillBlock,
+		// Utility
 		EQ::skills::SkillMeditate,
 		EQ::skills::SkillDoubleAttack,
 		EQ::skills::SkillDualWield,
@@ -480,7 +497,7 @@ void Companion::SetDefensiveSkillsFromCaps()
 	uint8 cls   = GetClass();
 	uint8 lvl   = GetLevel();
 
-	for (auto skill : defensive_skills) {
+	for (auto skill : combat_skills) {
 		uint16 cap = SkillCaps::Instance()->GetSkillCap(cls, skill, lvl).cap;
 		if (cap > 0) {
 			skills[static_cast<int>(skill)] = cap;

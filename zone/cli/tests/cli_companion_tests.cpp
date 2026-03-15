@@ -49,6 +49,8 @@
 //  19. Authenticity Fixes (GAP-01/02/03/04/06)
 //  20. Re-recruitment: HP/mana restoration and DataBucket cooldown cleanup
 //  21. BUG-028: Companion::Death() hardening — entity id=0 fallback + Process() safety net
+//  22. GAP-17: Lua_Companion binding methods (GetPrimaryFaction, GetFollowID, etc.)
+//  23. GAP-10: Weapon skill initialization (SkillOffense + weapon skills from caps)
 // ============================================================
 
 #include "zone/zone_cli.h"
@@ -6007,6 +6009,162 @@ inline void TestCompanionDeathHardening()
 }
 
 // ============================================================
+// Suite 22: GAP-17 — Lua_Companion binding methods
+//
+// Verifies that methods added to Lua_Companion bindings are callable
+// at the C++ level. These are methods that were previously missing from
+// the Lua_Companion luabind registration (inherits Lua_Mob, not Lua_NPC)
+// and returned nil when called from Lua on a Companion object.
+//
+// Note: We test the underlying C++ methods, not the Lua dispatch.
+// If the C++ methods work, the luabind registrations will work.
+// ============================================================
+
+inline void TestCompanionLuaBindings()
+{
+	std::cout << "\n--- Suite 22: GAP-17 Lua_Companion binding methods ---\n";
+
+	Companion* comp = CreateTestCompanionByClass(1, 50, 0);  // warrior
+	if (!comp) {
+		SkipTest("Suite 22 (all)", "No warrior NPC found in DB");
+		return;
+	}
+
+	// ---- 22.1: GetPrimaryFaction() — was nil on Companion objects ----
+	// GetPrimaryFaction() is an NPC method inherited through C++ but was not
+	// registered on Lua_Companion. The C++ call must not crash and return >= 0.
+	{
+		int faction = comp->GetPrimaryFaction();
+		RunTest("22.1 GetPrimaryFaction() callable on Companion (>= 0)", true, faction >= 0);
+	}
+
+	// ---- 22.2: GetFollowID() / SetFollowID() round-trip ----
+	{
+		comp->SetFollowID(42);
+		RunTest("22.2 GetFollowID() round-trip after SetFollowID(42)", 42, comp->GetFollowID());
+		comp->SetFollowID(0);  // restore
+	}
+
+	// ---- 22.3: GetFollowDistance() / SetFollowDistance() round-trip ----
+	{
+		comp->SetFollowDistance(150);
+		RunTest("22.3 GetFollowDistance() round-trip after SetFollowDistance(150)", 150, comp->GetFollowDistance());
+		comp->SetFollowDistance(100);  // restore
+	}
+
+	// ---- 22.4: GetFollowCanRun() / SetFollowCanRun() round-trip ----
+	{
+		comp->SetFollowCanRun(true);
+		RunTest("22.4 GetFollowCanRun() returns true after SetFollowCanRun(true)", true, comp->GetFollowCanRun());
+		comp->SetFollowCanRun(false);
+		RunTest("22.4b GetFollowCanRun() returns false after SetFollowCanRun(false)", false, comp->GetFollowCanRun());
+	}
+
+	// ---- 22.5: IsGuarding() callable (does not crash) ----
+	{
+		bool guarding = comp->IsGuarding();
+		// Just verify it's callable; initial state may be true or false
+		RunTest("22.5 IsGuarding() callable without crash", guarding, comp->IsGuarding());
+	}
+
+	// ---- 22.6: GetStance() / SetStance() round-trip (regression guard) ----
+	{
+		comp->SetStance(COMPANION_STANCE_PASSIVE);
+		RunTest("22.6 GetStance() round-trip after SetStance(PASSIVE)",
+			static_cast<int>(COMPANION_STANCE_PASSIVE), static_cast<int>(comp->GetStance()));
+		comp->SetStance(COMPANION_STANCE_BALANCED);  // restore
+	}
+
+	// ---- 22.7: GetCompanionType() callable ----
+	{
+		uint8 ctype = comp->GetCompanionType();
+		RunTest("22.7 GetCompanionType() returns valid value",
+			true, (ctype == COMPANION_TYPE_COMPANION || ctype == COMPANION_TYPE_MERCENARY));
+	}
+
+	// ---- 22.8: GetCombatRole() callable ----
+	{
+		CompanionCombatRole role = comp->GetCombatRole();
+		RunTest("22.8 GetCombatRole() returns valid range",
+			true, (role >= COMBAT_ROLE_MELEE_TANK && role <= COMBAT_ROLE_HEALER));
+	}
+
+	std::cout << "--- Suite 22 Complete ---\n";
+}
+
+// ============================================================
+// Suite 23: GAP-10 — Weapon skill initialization
+//
+// Verifies that SetDefensiveSkillsFromCaps() also initializes weapon skills
+// (SkillOffense, 1HSlashing, 1HBlunt, etc.) from skill caps so that
+// compute_tohit() in attack.cpp returns non-zero values.
+// Without weapon skills, companions at low levels had very poor hit rates
+// because compute_tohit() = 7 + accuracy_rating only.
+// ============================================================
+
+inline void TestCompanionWeaponSkillInit()
+{
+	std::cout << "\n--- Suite 23: GAP-10 Weapon skill initialization ---\n";
+
+	// ---- 23.1–23.4: Warrior companion has weapon skills set from caps ----
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 50, 0);  // warrior level ~50
+		if (!comp) {
+			SkipTest("23.1-23.4 weapon skills", "No warrior NPC found at level 50");
+		} else {
+			RunTestGreaterThan("23.1 Warrior GetSkill(SkillOffense) > 0",
+				static_cast<int>(comp->GetSkill(EQ::skills::SkillOffense)), 0);
+			RunTestGreaterThan("23.2 Warrior GetSkill(Skill1HSlashing) > 0",
+				static_cast<int>(comp->GetSkill(EQ::skills::Skill1HSlashing)), 0);
+			RunTestGreaterThan("23.3 Warrior GetSkill(Skill1HBlunt) > 0",
+				static_cast<int>(comp->GetSkill(EQ::skills::Skill1HBlunt)), 0);
+			RunTestGreaterThan("23.4 Warrior GetSkill(SkillDefense) > 0 (regression)",
+				static_cast<int>(comp->GetSkill(EQ::skills::SkillDefense)), 0);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ---- 23.5–23.6: Wizard has SkillOffense but not necessarily 1HSlashing ----
+	{
+		Companion* wiz = CreateTestCompanionByClass(12, 50, 0);  // wizard
+		if (!wiz) {
+			SkipTest("23.5-23.6 wizard weapon skills", "No wizard NPC found at level 50");
+		} else {
+			// Wizard SHOULD have SkillOffense (all classes do)
+			RunTestGreaterThan("23.5 Wizard GetSkill(SkillOffense) > 0",
+				static_cast<int>(wiz->GetSkill(EQ::skills::SkillOffense)), 0);
+
+			// Wizard 1HSlashing may or may not be in DB caps — log it but don't fail
+			uint16 slash = wiz->GetSkill(EQ::skills::Skill1HSlashing);
+			if (slash == 0) {
+				std::cout << "[PASS] 23.6 Wizard has no Skill1HSlashing (expected for pure casters)\n";
+			} else {
+				std::cout << "[INFO] 23.6 Wizard has Skill1HSlashing=" << slash
+				          << " (DB caps include it — acceptable)\n";
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ---- 23.7–23.8: Low-level warrior has weapon skills ----
+	// Key regression: npc_scale_global_base.attack=0 at levels 1-30 means
+	// companions at those levels had almost no offense. Weapon skills fix this.
+	{
+		Companion* low_comp = CreateTestCompanionByClass(1, 20, 0);  // warrior ~level 20
+		if (!low_comp) {
+			SkipTest("23.7-23.8 low-level weapon skills", "No warrior NPC near level 20");
+		} else {
+			RunTestGreaterThan("23.7 Level-20 warrior SkillOffense > 0",
+				static_cast<int>(low_comp->GetSkill(EQ::skills::SkillOffense)), 0);
+			RunTestGreaterThan("23.8 Level-20 warrior Skill1HSlashing > 0",
+				static_cast<int>(low_comp->GetSkill(EQ::skills::Skill1HSlashing)), 0);
+		}
+	}
+
+	std::cout << "--- Suite 23 Complete ---\n";
+}
+
+// ============================================================
 // Entry Point
 // ============================================================
 
@@ -6088,6 +6246,12 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	CleanupTestCompanions();
 
 	TestCompanionDeathHardening();
+	CleanupTestCompanions();
+
+	TestCompanionLuaBindings();
+	CleanupTestCompanions();
+
+	TestCompanionWeaponSkillInit();
 	CleanupTestCompanions();
 
 	// Final DB cleanup

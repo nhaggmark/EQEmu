@@ -67,9 +67,21 @@ public:
 	void SetFollowDistance(int dist);
 	void SetFollowID(int id);
 	void SetFollowCanRun(bool v);
+	int  GetFollowID();
+	int  GetFollowDistance();
+	bool GetFollowCanRun();
+	bool IsGuarding();
 	// SetGuardMode(true)  — hold current position (clears follow ID, sets guard point)
 	// SetGuardMode(false) — resume following owner (clears guard point, restores follow ID)
 	void SetGuardMode(bool enabled);
+
+	// -------------------------------------------------------
+	// NPC methods exposed on Lua_Companion
+	// (Lua_Companion inherits Lua_Mob, not Lua_NPC, so methods
+	//  registered on Lua_NPC are not inherited. These must be
+	//  explicitly re-registered here.)
+	// -------------------------------------------------------
+	int  GetPrimaryFaction();
 
 	// -------------------------------------------------------
 	// Experience
