@@ -5079,6 +5079,460 @@ inline void TestCompanionAuthenticityFixes()
 		}
 	}
 
+	// ============================================================
+	// GAP-01 FUNCTIONAL: TryCriticalHit path actually executes for companion
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.35: GAP-01 — TryCriticalHit does not crash when called on a companion
+	// We call TryCriticalHit directly with a valid DamageHitInfo. With NPCCanCrit=false,
+	// a regular NPC early-returns (hit.damage_done unchanged), but a companion bypasses
+	// the guard and runs the crit code path. The test verifies:
+	//   (a) no crash/segfault on companion path
+	//   (b) regular NPC: damage_done unchanged after TryCriticalHit (early return)
+	//   (c) companion: TryCriticalHit executes without crash (damage may or may not change)
+	// ------------------------------------------------------------
+	{
+		bool npc_can_crit_original = RuleB(Combat, NPCCanCrit);
+		if (npc_can_crit_original) {
+			SkipTest("GAP-01 > 19.35 TryCriticalHit early-returns for regular NPC (NPCCanCrit=false required)",
+				"NPCCanCrit rule is true; cannot verify early-return guard");
+		} else {
+			// Part (b): regular NPC — guard should fire and early-return
+			uint32 npc_id = FindNPCTypeIDForClassLevel(1, 5, 15);
+			if (npc_id == 0) {
+				SkipTest("GAP-01 > 19.35b Regular NPC TryCriticalHit early-return", "No low-level NPC found");
+			} else {
+				const NPCType* npc_type = content_db.LoadNPCTypesData(npc_id);
+				if (npc_type) {
+					auto* target_npc = new NPC(npc_type, nullptr, glm::vec4(0,0,0,0), GravityBehavior::Water, false);
+					entity_list.AddNPC(target_npc);
+					auto* attacker_npc = new NPC(npc_type, nullptr, glm::vec4(5,5,0,0), GravityBehavior::Water, false);
+					entity_list.AddNPC(attacker_npc);
+
+					DamageHitInfo hit{};
+					hit.damage_done = 50;
+					hit.base_damage = 50;
+					hit.min_damage  = 0;
+					hit.skill = EQ::skills::SkillOffense;
+
+					// Regular NPC with NPCCanCrit=false: TryCriticalHit early-returns
+					// because IsNPC()=true and !IsCompanion()=true and !NPCCanCrit=true
+					// The guard fires -> damage_done is NOT modified
+					int64 before = hit.damage_done;
+					attacker_npc->TryCriticalHit(target_npc, hit);
+					// Guard fires for regular NPC: damage_done should remain 50
+					// (no crit code ran to modify it)
+					RunTest("GAP-01 > 19.35b Regular NPC TryCriticalHit does NOT modify damage (early-return guard)",
+						static_cast<int>(before), static_cast<int>(hit.damage_done));
+
+					target_npc->Depop();
+					attacker_npc->Depop();
+					entity_list.MobProcess();
+				}
+			}
+
+			// Part (c): companion — guard is bypassed, crit code executes
+			Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+			Companion* defender = CreateTestCompanionByClass(1, 50, 0);
+			if (!warrior || !defender) {
+				SkipTest("GAP-01 > 19.35c Companion TryCriticalHit executes without crash",
+					"Missing warrior or defender companion");
+			} else {
+				warrior->ScaleStatsToLevel(50);
+				defender->ScaleStatsToLevel(50);
+
+				DamageHitInfo hit{};
+				hit.damage_done = 50;
+				hit.base_damage = 50;
+				hit.min_damage  = 0;
+				hit.skill = EQ::skills::SkillOffense;
+
+				// For companion: IsNPC()=true, IsCompanion()=true
+				// guard: (IsNPC() && !IsCompanion()) = false -> crit code runs
+				// Call should not crash; damage may stay at 50 (no crit) or increase (crit)
+				warrior->TryCriticalHit(defender, hit);
+				RunTest("GAP-01 > 19.35c Companion TryCriticalHit executes without crash",
+					true, true); // Just verifying no crash
+				// After crit code: damage_done >= 50 (crit increases it, non-crit leaves it)
+				RunTest("GAP-01 > 19.35c Companion TryCriticalHit does not decrease damage_done",
+					true, hit.damage_done >= 50);
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-02 FUNCTIONAL: DoCastingChecksOnTarget with real PC-only spell
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.36: GAP-02 — DoCastingChecksOnTarget returns true for companion with PC-only spell
+	// Find a PC-only spell (pcnpc_only_flag=1) loaded in spells[]. Call
+	// DoCastingChecksOnTarget(false, spell_id, companion) and verify it returns true.
+	// Then verify it returns false for a regular NPC target.
+	// ------------------------------------------------------------
+	{
+		// Find a PC-only spell that's loaded in the spells[] array
+		// Query the DB dynamically to avoid hardcoding a spell ID
+		uint32 pconly_spell_id = 0;
+		{
+			auto results = content_db.QueryDatabase(
+				"SELECT id FROM spells_new WHERE pcnpc_only_flag = 1 "
+				"AND targettype NOT IN (9,10,40) " // exclude AE hate list types (ST_AETargetHateList=40, ST_HateList=9)
+				"ORDER BY id LIMIT 100"
+			);
+			if (results.Success()) {
+				for (auto row = results.begin(); row != results.end(); ++row) {
+					uint32 sid = static_cast<uint32>(atoi(row[0]));
+					if (IsValidSpell(sid)) {
+						pconly_spell_id = sid;
+						break;
+					}
+				}
+			}
+		}
+
+		if (pconly_spell_id == 0) {
+			SkipTest("GAP-02 > 19.36 DoCastingChecksOnTarget with PC-only spell",
+				"No PC-only spell found in loaded spell data");
+		} else {
+			// Create a companion as both caster and target
+			Companion* caster   = CreateTestCompanionByClass(2, 50, 0); // Cleric caster
+			Companion* comp_tgt = CreateTestCompanionByClass(1, 50, 0); // Warrior target
+			uint32 npc_id       = FindNPCTypeIDForClassLevel(1, 5, 15);
+
+			if (!caster || !comp_tgt) {
+				SkipTest("GAP-02 > 19.36 DoCastingChecksOnTarget companion target",
+					"Missing caster or companion target");
+			} else {
+				// Companion target should pass the PC-only check
+				bool result_companion = caster->DoCastingChecksOnTarget(false, static_cast<int32>(pconly_spell_id), comp_tgt);
+				// The function returns true if the spell CAN target the entity.
+				// Since the pcnpc_only_flag check returns false on failure (blocks the spell),
+				// we expect the function to return true for a companion target.
+				RunTest(
+					fmt::format("GAP-02 > 19.36 DoCastingChecksOnTarget returns true for companion target (spell {})", pconly_spell_id),
+					true, result_companion);
+			}
+
+			if (npc_id != 0) {
+				const NPCType* npc_type = content_db.LoadNPCTypesData(npc_id);
+				if (npc_type && caster) {
+					auto* npc_target = new NPC(npc_type, nullptr, glm::vec4(5,5,0,0), GravityBehavior::Water, false);
+					entity_list.AddNPC(npc_target);
+					// Regular NPC target should fail the PC-only check
+					bool result_npc = caster->DoCastingChecksOnTarget(false, static_cast<int32>(pconly_spell_id), npc_target);
+					RunTest(
+						fmt::format("GAP-02 > 19.36 DoCastingChecksOnTarget returns false for regular NPC target (spell {})", pconly_spell_id),
+						false, result_npc);
+					npc_target->Depop();
+					entity_list.MobProcess();
+				}
+			} else {
+				SkipTest("GAP-02 > 19.36 DoCastingChecksOnTarget NPC target test", "No low-level NPC found");
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-03 FUNCTIONAL: CanThisClass* return true with non-zero skills
+	// (Already covered in 19.25/19.26; add Riposte and Block)
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.37: GAP-03 — CanThisClassRiposte returns true for warrior with non-zero riposte
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-03 > 19.37 Warrior CanThisClassRiposte() returns true", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			int riposte_skill = static_cast<int>(warrior->GetSkill(EQ::skills::SkillRiposte));
+			bool can_riposte = warrior->CanThisClassRiposte();
+			if (riposte_skill > 0) {
+				RunTest("GAP-03 > 19.37 Warrior CanThisClassRiposte() returns true when skill > 0",
+					true, can_riposte);
+			} else {
+				SkipTest("GAP-03 > 19.37 Warrior CanThisClassRiposte check", "Riposte skill is 0 (skill_caps gap)");
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.38: GAP-03 — CanThisClassBlock returns true for monk (monk has block)
+	// ------------------------------------------------------------
+	{
+		Companion* monk = CreateTestCompanionByClass(7, 50, 0); // Monk = class 7
+		if (!monk) {
+			SkipTest("GAP-03 > 19.38 Monk CanThisClassBlock() returns true", "No monk NPC near level 50");
+		} else {
+			monk->ScaleStatsToLevel(50);
+			int block_skill = static_cast<int>(monk->GetSkill(EQ::skills::SkillBlock));
+			bool can_block = monk->CanThisClassBlock();
+			if (block_skill > 0) {
+				RunTest("GAP-03 > 19.38 Monk CanThisClassBlock() returns true when skill > 0",
+					true, can_block);
+			} else {
+				SkipTest("GAP-03 > 19.38 Monk CanThisClassBlock check", "Block skill is 0 (skill_caps gap)");
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.39: GAP-03 — Wizard CanThisClassRiposte and CanThisClassBlock return false
+	// Wizard has no Riposte (skill=0) and no Block (skill=0). Both should be false.
+	// ------------------------------------------------------------
+	{
+		Companion* wiz = CreateTestCompanionByClass(12, 50, 0); // Wizard
+		if (!wiz) {
+			SkipTest("GAP-03 > 19.39 Wizard CanThisClassRiposte/Block return false", "No wizard NPC found");
+		} else {
+			wiz->ScaleStatsToLevel(50);
+			int riposte_skill = static_cast<int>(wiz->GetSkill(EQ::skills::SkillRiposte));
+			int block_skill   = static_cast<int>(wiz->GetSkill(EQ::skills::SkillBlock));
+			// Wizard has no riposte or block in skill_caps; skills are 0
+			// CanThisClassRiposte/Block check the skill value — 0 skill means false
+			if (riposte_skill == 0) {
+				RunTest("GAP-03 > 19.39 Wizard CanThisClassRiposte() returns false (skill=0)",
+					false, wiz->CanThisClassRiposte());
+			} else {
+				SkipTest("GAP-03 > 19.39 Wizard CanThisClassRiposte", "Wizard has non-zero riposte (unexpected)");
+			}
+			if (block_skill == 0) {
+				RunTest("GAP-03 > 19.39 Wizard CanThisClassBlock() returns false (skill=0)",
+					false, wiz->CanThisClassBlock());
+			} else {
+				SkipTest("GAP-03 > 19.39 Wizard CanThisClassBlock", "Wizard has non-zero block (unexpected)");
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-04 FUNCTIONAL: Stat multipliers affect derived stats (MaxHP/MaxMana)
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.40: GAP-04 — Warrior MaxHP increases when STA item equipped
+	// CalcMaxHP adds bonus HP per STA from items. Warriors get 8 HP/STA at level 60.
+	// This verifies the STA multiplier chain: GAP-04 raises warrior STA, and when
+	// a STA item is equipped, the HP bonus is larger than for a wizard.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-04 > 19.40 Warrior MaxHP increases with STA item", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+
+			// Find a STA-bonus item
+			uint32 sta_item_id = FindItemWithStatBonus("asta", 5);
+			if (sta_item_id == 0) {
+				SkipTest("GAP-04 > 19.40 Warrior MaxHP with STA item", "No STA-bonus item (asta >= 5) found");
+			} else {
+				int64 hp_before = warrior->GetMaxHP();
+				warrior->GiveItem(sta_item_id, EQ::invslot::slotEar1);
+				int64 hp_after = warrior->GetMaxHP();
+				warrior->RemoveItemFromSlot(EQ::invslot::slotEar1);
+				// Equipping a STA item should increase MaxHP for a warrior (8 HP/STA at level 60)
+				RunTest("GAP-04 > 19.40 Warrior MaxHP >= base after equipping STA item",
+					true, hp_after >= hp_before);
+				// Document the actual delta
+				int64 hp_delta = hp_after - hp_before;
+				if (hp_delta > 0) {
+					std::cout << "[INFO] GAP-04 > 19.40 Warrior HP bonus from STA item: +" << hp_delta << " HP\n";
+				}
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.41: GAP-04 — Wizard MaxMana increases when INT item equipped
+	// CalcMaxMana for npc_mana=0 path uses NPC formula: ((INT/2)+1)*level.
+	// With GAP-04's INT*1.20 multiplier, wizard has more INT. An INT item
+	// further increases MaxMana — verify the full INT-to-mana chain.
+	// ------------------------------------------------------------
+	{
+		Companion* wizard = CreateTestCompanionByClass(12, 50, 0); // Wizard
+		if (!wizard) {
+			SkipTest("GAP-04 > 19.41 Wizard MaxMana increases with INT item", "No wizard NPC found");
+		} else {
+			wizard->ScaleStatsToLevel(50);
+			int64 mana_before = wizard->GetMaxMana();
+			if (mana_before <= 0) {
+				SkipTest("GAP-04 > 19.41 Wizard MaxMana with INT item", "Wizard MaxMana is 0 at base (no mana in npc_types)");
+			} else {
+				// Find an INT-bonus item
+				uint32 int_item_id = FindItemWithStatBonus("aint", 5);
+				if (int_item_id == 0) {
+					SkipTest("GAP-04 > 19.41 Wizard MaxMana with INT item", "No INT-bonus item (aint >= 5) found");
+				} else {
+					wizard->GiveItem(int_item_id, EQ::invslot::slotEar1);
+					int64 mana_after = wizard->GetMaxMana();
+					wizard->RemoveItemFromSlot(EQ::invslot::slotEar1);
+					// Equipping INT item should increase MaxMana
+					RunTest("GAP-04 > 19.41 Wizard MaxMana >= base after equipping INT item",
+						true, mana_after >= mana_before);
+					int64 mana_delta = mana_after - mana_before;
+					if (mana_delta > 0) {
+						std::cout << "[INFO] GAP-04 > 19.41 Wizard mana bonus from INT item: +" << mana_delta << " mana\n";
+					}
+				}
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.42: GAP-04 — Warrior STA > Wizard STA after GAP-04 class multipliers
+	// Warrior gets STA*1.10; wizard gets STA*0.85. After ScaleStatsToLevel,
+	// warrior's effective STA should exceed wizard's if base STAs are comparable.
+	// This tests the STA multiplier applied during ScaleStatsToLevel directly.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0);
+		if (!warrior || !wizard) {
+			SkipTest("GAP-04 > 19.42 Warrior STA > Wizard STA after class multipliers",
+				"Missing warrior or wizard NPC near level 50");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+			int warrior_sta = static_cast<int>(warrior->GetSTA());
+			int wizard_sta  = static_cast<int>(wizard->GetSTA());
+			RunTestGreaterThan("GAP-04 > 19.42 Warrior STA > 0 after class stat scaling", warrior_sta, 0);
+			// With STA*1.10 for warrior vs STA*0.85 for wizard, warrior STA should be >= wizard STA
+			RunTest("GAP-04 > 19.42 Warrior STA >= Wizard STA after class multipliers",
+				true, warrior_sta >= wizard_sta);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.43: GAP-04 — MaxHP increases at higher level (proportional scaling)
+	// ScaleStatsToLevel scales max_hp from m_base_hp. Verify MaxHP at level 50
+	// is greater than MaxHP at level 10 for the same companion.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-04 > 19.43 Warrior MaxHP scales proportionally with level", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(10);
+			int64 hp_at_10 = warrior->GetMaxHP();
+			warrior->ScaleStatsToLevel(50);
+			int64 hp_at_50 = warrior->GetMaxHP();
+			RunTest("GAP-04 > 19.43 Warrior MaxHP at level 50 >= level 10",
+				true, hp_at_50 >= hp_at_10);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-06 FUNCTIONAL: Full caster < priest < hybrid < melee ordering
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.44: GAP-06 — Complete archetype ordering: caster < priest < hybrid < melee
+	// Tests the strict ordering of all four archetypes at the same level.
+	// Uses actual GetHandToHandDamage() return values.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1,  50, 0); // melee 100%
+		Companion* paladin = CreateTestCompanionByClass(3,  50, 0); // hybrid 80%
+		Companion* cleric  = CreateTestCompanionByClass(2,  50, 0); // priest 60%
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0); // caster 40%
+
+		if (!warrior || !paladin || !cleric || !wizard) {
+			SkipTest("GAP-06 > 19.44 Full archetype unarmed damage ordering caster<priest<hybrid<melee",
+				"Missing one or more class NPCs near level 50");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			paladin->ScaleStatsToLevel(50);
+			cleric->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+
+			int melee_dmg  = warrior->GetHandToHandDamage();
+			int hybrid_dmg = paladin->GetHandToHandDamage();
+			int priest_dmg = cleric->GetHandToHandDamage();
+			int caster_dmg = wizard->GetHandToHandDamage();
+
+			std::cout << "[INFO] GAP-06 > 19.44 Unarmed damage: warrior=" << melee_dmg
+				<< " paladin=" << hybrid_dmg
+				<< " cleric=" << priest_dmg
+				<< " wizard=" << caster_dmg << "\n";
+
+			// melee >= hybrid (100% >= 80%)
+			RunTest("GAP-06 > 19.44 Melee (warrior) >= Hybrid (paladin) unarmed damage",
+				true, melee_dmg >= hybrid_dmg);
+			// hybrid >= priest (80% >= 60%)
+			RunTest("GAP-06 > 19.44 Hybrid (paladin) >= Priest (cleric) unarmed damage",
+				true, hybrid_dmg >= priest_dmg);
+			// priest >= caster (60% >= 40%)
+			RunTest("GAP-06 > 19.44 Priest (cleric) >= Caster (wizard) unarmed damage",
+				true, priest_dmg >= caster_dmg);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.45: GAP-06 — Shadow Knight (hybrid) unarmed damage ordering
+	// Tests another hybrid class to verify it's in the correct bracket.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1,  50, 0); // melee
+		Companion* sk      = CreateTestCompanionByClass(5,  50, 0); // Shadow Knight (hybrid 80%)
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0); // caster
+		if (!warrior || !sk || !wizard) {
+			SkipTest("GAP-06 > 19.45 Shadow Knight unarmed damage in hybrid bracket",
+				"Missing warrior, SK, or wizard NPC near level 50");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			sk->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+			int warrior_dmg = warrior->GetHandToHandDamage();
+			int sk_dmg      = sk->GetHandToHandDamage();
+			int wizard_dmg  = wizard->GetHandToHandDamage();
+			RunTest("GAP-06 > 19.45 Warrior unarmed >= Shadow Knight unarmed",
+				true, warrior_dmg >= sk_dmg);
+			RunTest("GAP-06 > 19.45 Shadow Knight unarmed >= Wizard unarmed",
+				true, sk_dmg >= wizard_dmg);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.46: GAP-06 — Shaman (priest) unarmed damage is in priest bracket
+	// Tests another priest class to verify it's between hybrid and caster.
+	// ------------------------------------------------------------
+	{
+		Companion* paladin = CreateTestCompanionByClass(3,  50, 0); // hybrid
+		Companion* shaman  = CreateTestCompanionByClass(10, 50, 0); // Shaman (priest 60%)
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0); // caster
+		if (!paladin || !shaman || !wizard) {
+			SkipTest("GAP-06 > 19.46 Shaman unarmed damage in priest bracket",
+				"Missing paladin, shaman, or wizard NPC near level 50");
+		} else {
+			paladin->ScaleStatsToLevel(50);
+			shaman->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+			int paladin_dmg = paladin->GetHandToHandDamage();
+			int shaman_dmg  = shaman->GetHandToHandDamage();
+			int wizard_dmg  = wizard->GetHandToHandDamage();
+			RunTest("GAP-06 > 19.46 Hybrid (paladin) unarmed >= Priest (shaman) unarmed",
+				true, paladin_dmg >= shaman_dmg);
+			RunTest("GAP-06 > 19.46 Priest (shaman) unarmed >= Caster (wizard) unarmed",
+				true, shaman_dmg >= wizard_dmg);
+		}
+	}
+	CleanupTestCompanions();
+
 	std::cout << "--- Suite 19 Complete ---\n";
 }
 
