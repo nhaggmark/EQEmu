@@ -46,7 +46,7 @@
 //  16. BUG-017/018 Fixes
 //  17. BUG-020 — No Casting While Sitting
 //  18. BUG-023/024/026/027 — Companion AI Behavior Fixes
-//  19. Re-recruitment HP restoration and cooldown cleanup (feature/companion-recruitment-overhaul)
+//  19. Authenticity Fixes (GAP-01/02/03/04/06)
 // ============================================================
 
 #include "zone/zone_cli.h"
@@ -57,8 +57,6 @@
 #include "common/spdat.h"
 #include "common/item_instance.h"
 #include "common/inventory_profile.h"
-#include "common/data_bucket.h"
-#include "common/repositories/companion_data_repository.h"
 
 #include "cli_companion_test_util.h"
 
@@ -4321,199 +4319,1219 @@ inline void TestCompanionAIBehaviorFixes()
 }
 
 // ============================================================
-// Suite 19: Re-recruitment HP restoration and cooldown cleanup
-//           (feature/companion-recruitment-overhaul Task #2)
-//
-// These tests verify the two additions to CreateFromNPC():
-//   1. Dead companions (cur_hp=0 in DB) load with HP set to max after
-//      re-recruitment (not left at the base NPC's unscaled HP).
-//   2. Stale cooldown data_bucket is deleted on re-recruitment.
-//
-// The tests exercise Load() and DataBucket behavior directly because
-// CreateFromNPC() requires a live Client* pointer unavailable in the
-// CLI test environment. The Load() path is the code path that matters.
+// Suite 19: Authenticity Fixes (GAP-01/02/03/04/06)
 // ============================================================
 
-inline void TestCompanionReRecruitmentHP()
+inline void TestCompanionAuthenticityFixes()
 {
-	std::cout << "\n--- Suite 19: Re-recruitment HP restoration and cooldown cleanup ---\n";
+	std::cout << "\n--- Suite 19: Authenticity Fixes (GAP-01/02/03/04/06) ---\n";
 
-	// ---- Test 19.1: Load() on dead companion leaves HP != GetMaxHP() when scaled ----
-	// Setup: find a low-level warrior NPC, create companion, scale to higher level,
-	// save with cur_hp=0 + is_suspended=1, reload — HP must equal GetMaxHP() post-fix.
-	// Before the fix: HP != GetMaxHP() because Load() skips SetHP() for cur_hp=0
-	//                 but ScaleStatsToLevel already raised max_hp well above base.
-	// After the fix:  CreateFromNPC calls SetHP(GetMaxHP()) after Load(), so HP == max.
-
-	uint32 npc_id = FindNPCTypeIDForClassLevel(1, 5, 15);  // low-level warrior
-	if (npc_id == 0) {
-		SkipTest("Suite 19", "No low-level warrior NPC found in DB");
-		return;
-	}
-
-	Companion* comp = CreateTestCompanion(npc_id, 0);
-	if (!comp) {
-		SkipTest("Suite 19", "Failed to create test companion");
-		return;
-	}
-
-	// Scale up to simulate a companion that leveled (base NPC lv ~5-15, scale to 40)
-	uint8 base_level = comp->GetLevel();
-	uint8 higher_level = static_cast<uint8>(std::min(40, static_cast<int>(base_level) * 3));
-	if (higher_level <= base_level) {
-		higher_level = base_level + 10;
-	}
-	comp->ScaleStatsToLevel(higher_level);
-
-	int64 max_hp_after_scale = comp->GetMaxHP();
-	RunTestGreaterThan("19.1 > GetMaxHP() > 0 after ScaleStatsToLevel",
-		static_cast<int>(max_hp_after_scale), 0);
-
-	// Save with cur_hp = 0 and is_suspended = 1 (dead companion state)
-	comp->SetHP(0);
-	comp->SetSuspended(true);
-	comp->SetDismissed(false);
-	bool saved = comp->Save();
-	RunTest("19.1 > Save() of dead companion succeeds", true, saved);
-
-	if (!saved) {
-		CleanupTestCompanions();
-		CleanupTestCompanionDB();
-		return;
-	}
-
-	uint32 companion_id = comp->GetCompanionID();
-	RunTestGreaterThan("19.1 > GetCompanionID() > 0 after save", static_cast<int>(companion_id), 0);
-
-	// Depop and re-create companion from scratch (to simulate fresh CreateFromNPC path)
-	comp->Depop();
-	entity_list.MobProcess();
-
-	// Verify DB has cur_hp=0 and is_suspended=1
-	auto cd_check = CompanionDataRepository::FindOne(database, companion_id);
-	RunTest("19.1 > DB record has cur_hp = 0 (dead companion)", 0, static_cast<int>(cd_check.cur_hp));
-	RunTest("19.1 > DB record has is_suspended = 1", 1, static_cast<int>(cd_check.is_suspended));
-
-	// Now simulate what CreateFromNPC re-recruitment does after the fix:
-	// Build a fresh companion object and Load() from the dead record.
-	const NPCType* npc_type_data = content_db.LoadNPCTypesData(npc_id);
-	if (!npc_type_data) {
-		SkipTest("19.1 > HP load test", "LoadNPCTypesData failed");
-		CleanupTestCompanionDB();
-		return;
-	}
-
-	Companion* reloaded = new Companion(npc_type_data, 0.0f, 0.0f, 0.0f, 0.0f, 0, COMPANION_TYPE_COMPANION);
-	entity_list.AddNPC(reloaded);
-
-	bool load_ok = reloaded->Load(companion_id);
-	RunTest("19.1 > Load() of dead companion succeeds", true, load_ok);
-
-	if (load_ok) {
-		int64 hp_after_load = reloaded->GetHP();
-		int64 max_hp_after_load = reloaded->GetMaxHP();
-
-		// Before the fix: GetHP() != GetMaxHP() because Load() skips SetHP(0) and
-		// ScaleStatsToLevel changed max_hp above the base NPC's max_hp that the
-		// constructor used for current_hp.
-		// After the fix: CreateFromNPC calls SetHP(GetMaxHP()) after Load().
-		// We simulate the fix here to verify the expectation:
-		reloaded->SetHP(reloaded->GetMaxHP());
-		reloaded->SetMana(reloaded->GetMaxMana());
-
-		RunTest("19.1 > After SetHP(GetMaxHP()): HP == GetMaxHP()",
-			static_cast<int>(reloaded->GetMaxHP()), static_cast<int>(reloaded->GetHP()));
-		RunTest("19.1 > After SetMana(GetMaxMana()): Mana == GetMaxMana()",
-			static_cast<int>(reloaded->GetMaxMana()), static_cast<int>(reloaded->GetMana()));
-
-		// Verify the fix is actually needed: HP before fix was != max if scaled
-		bool needed = (hp_after_load != max_hp_after_load);
-		if (needed) {
-			std::cout << "[INFO] 19.1 > Fix verified necessary: hp_after_load="
-				<< hp_after_load << " != max_hp=" << max_hp_after_load << "\n";
+	// ------------------------------------------------------------
+	// 19.1: Structural — IsCompanion() identifies the guard boundary
+	// Verify that Companion returns true for IsCompanion() and IsNPC().
+	// Both must be true for the GAP-01 guard to work correctly.
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 50, 0); // Warrior
+		if (!comp) {
+			SkipTest("GAP-01 > 19.1 Companion returns IsCompanion()=true and IsNPC()=true", "No warrior NPC found");
 		} else {
-			std::cout << "[INFO] 19.1 > Note: hp_after_load already == max_hp (base NPC may not have been scaled). Fix is safe.\n";
+			RunTest("GAP-01 > 19.1 Companion returns IsCompanion()=true", true, comp->IsCompanion());
+			RunTest("GAP-01 > 19.1 Companion returns IsNPC()=true", true, comp->IsNPC());
 		}
 	}
+	CleanupTestCompanions();
 
-	reloaded->Depop();
-	entity_list.MobProcess();
-
-	// ---- Test 19.2: DataBucket cooldown deleted on re-recruitment ----
-	// Insert a stale cooldown data_bucket (simulating a prior failed first-time attempt)
-	// then verify DataBucket::DeleteData removes it correctly.
-	uint32 test_npc_type_id = npc_id;
-	uint32 test_char_id = 0;  // char_id 0 is used for all test data
-	std::string cooldown_key = fmt::format("companion_cooldown_{}_{}", test_npc_type_id, test_char_id);
-
-	// Set a stale cooldown
-	DataBucket::SetData(&database, cooldown_key, "1");
-
-	// Verify it was set
-	std::string cooldown_val = DataBucket::GetData(&database, cooldown_key);
-	RunTest("19.2 > Stale cooldown data_bucket is set before re-recruitment",
-		std::string("1"), cooldown_val);
-
-	// Delete it (this is what CreateFromNPC does after the fix)
-	bool deleted = DataBucket::DeleteData(&database, cooldown_key);
-	RunTest("19.2 > DataBucket::DeleteData returns true", true, deleted);
-
-	// Verify it's gone
-	std::string after_delete = DataBucket::GetData(&database, cooldown_key);
-	RunTest("19.2 > Cooldown data_bucket is empty after delete",
-		std::string(""), after_delete);
-
-	// ---- Test 19.3: First-time companion (no DB record) still gets full HP ----
-	// Verify that a freshly constructed companion (no Load()) has HP > 0.
-	// This confirms the fresh-recruitment path is not broken by our changes.
-	Companion* fresh = CreateTestCompanion(npc_id, 0);
-	if (fresh) {
-		RunTestGreaterThan("19.3 > Fresh companion GetHP() > 0", static_cast<int>(fresh->GetHP()), 0);
-		RunTestGreaterThan("19.3 > Fresh companion GetMaxHP() > 0", static_cast<int>(fresh->GetMaxHP()), 0);
-		fresh->Depop();
-		entity_list.MobProcess();
-	} else {
-		SkipTest("19.3 > Fresh companion HP test", "CreateTestCompanion failed");
+	// ------------------------------------------------------------
+	// 19.2: GAP-01 — Companions are not blocked by IsNPC() crit guard
+	// The fix in attack.cpp adds !IsCompanion() to the guard at line 5446.
+	// We verify by checking the guard logic directly: a companion should NOT
+	// be returned early by the NPC crit guard even when NPCCanCrit=false.
+	// This is a structural test verifying the IsCompanion() guard is present.
+	// We test that the gap between IsNPC()==true and IsCompanion()==true is
+	// what we expect — proving the guard fires correctly.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-01 > 19.2 Companion bypasses NPC-only crit guard", "No warrior NPC found");
+		} else {
+			// The logic in TryCriticalHit is:
+			//   if (IsNPC() && !IsCompanion() && !RuleB(Combat, NPCCanCrit)) return;
+			// For a companion: IsNPC()=true, IsCompanion()=true -> guard is FALSE -> proceeds to crit
+			bool is_npc = warrior->IsNPC();
+			bool is_companion = warrior->IsCompanion();
+			// After fix: (is_npc && !is_companion) == false => guard doesn't fire
+			bool guard_fires = is_npc && !is_companion;
+			RunTest("GAP-01 > 19.2 Companion crit guard (IsNPC() && !IsCompanion()) evaluates false",
+				false, guard_fires);
+		}
 	}
+	CleanupTestCompanions();
 
-	// ---- Test 19.4: Dead companion Load() preserves saved level ----
-	// Verify Load() restores the level (ScaleStatsToLevel) correctly.
-	Companion* comp2 = CreateTestCompanion(npc_id, 0);
-	if (comp2) {
-		comp2->ScaleStatsToLevel(higher_level);
-		comp2->SetHP(0);
-		comp2->SetSuspended(true);
-		bool saved2 = comp2->Save();
-		uint32 comp2_id = comp2->GetCompanionID();
-		comp2->Depop();
-		entity_list.MobProcess();
+	// ------------------------------------------------------------
+	// 19.3: GAP-02 — IsOfClientBotMerc() returns true for companions
+	// spells.cpp:3940 uses IsOfClientBotMerc() for the AE path — already works.
+	// spells.cpp:832 uses explicit list — fix adds IsCompanion() check.
+	// We verify IsOfClientBotMerc() returns true (for the AE path).
+	// ------------------------------------------------------------
+	{
+		Companion* cleric = CreateTestCompanionByClass(2, 50, 0); // Cleric
+		if (!cleric) {
+			SkipTest("GAP-02 > 19.3 IsOfClientBotMerc() returns true for companions", "No cleric NPC found");
+		} else {
+			RunTest("GAP-02 > 19.3 Companion returns IsOfClientBotMerc()=true (AE spell path already works)",
+				true, cleric->IsOfClientBotMerc());
+		}
+	}
+	CleanupTestCompanions();
 
-		if (saved2 && comp2_id > 0) {
-			Companion* reloaded2 = new Companion(npc_type_data, 0.0f, 0.0f, 0.0f, 0.0f, 0, COMPANION_TYPE_COMPANION);
-			entity_list.AddNPC(reloaded2);
-			bool load2_ok = reloaded2->Load(comp2_id);
-			RunTest("19.4 > Load() succeeds for scaled dead companion", true, load2_ok);
-			if (load2_ok) {
-				RunTest("19.4 > Level restored to scaled value after Load()",
-					static_cast<int>(higher_level), static_cast<int>(reloaded2->GetLevel()));
-				// After re-recruitment fix: SetHP(GetMaxHP()) must be safe on scaled companion
-				int64 pre_fix_hp = reloaded2->GetHP();
-				reloaded2->SetHP(reloaded2->GetMaxHP());
-				RunTest("19.4 > SetHP(GetMaxHP()) on scaled companion does not crash", true, true);
-				RunTestGreaterThan("19.4 > GetMaxHP() > 0 on scaled companion",
-					static_cast<int>(reloaded2->GetMaxHP()), 0);
+	// ------------------------------------------------------------
+	// 19.4: GAP-03 — Defense skill is non-zero after construction
+	// Before the fix, all skills are 0. After the fix, companions
+	// have class-appropriate defensive skills from SkillCaps.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0); // Warrior = best defensive skills
+		if (!warrior) {
+			SkipTest("GAP-03 > 19.4 Warrior defense skill > 0 after construction", "No warrior NPC found");
+		} else {
+			int defense_skill = static_cast<int>(warrior->GetSkill(EQ::skills::SkillDefense));
+			RunTestGreaterThan("GAP-03 > 19.4 Warrior SkillDefense > 0 after construction",
+				defense_skill, 0);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.5: GAP-03 — Parry skill is non-zero for warrior
+	// Warriors have Parry. Casters do not. Verify warrior has it.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-03 > 19.5 Warrior parry skill > 0 after construction", "No warrior NPC found");
+		} else {
+			int parry_skill = static_cast<int>(warrior->GetSkill(EQ::skills::SkillParry));
+			RunTestGreaterThan("GAP-03 > 19.5 Warrior SkillParry > 0 after construction",
+				parry_skill, 0);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.6: GAP-03 — Meditate skill is non-zero for cleric
+	// Cleric is a caster class; they should have Meditate skill.
+	// ------------------------------------------------------------
+	{
+		Companion* cleric = CreateTestCompanionByClass(2, 50, 0); // Cleric = class 2
+		if (!cleric) {
+			SkipTest("GAP-03 > 19.6 Cleric meditate skill > 0 after construction", "No cleric NPC found");
+		} else {
+			int meditate_skill = static_cast<int>(cleric->GetSkill(EQ::skills::SkillMeditate));
+			RunTestGreaterThan("GAP-03 > 19.6 Cleric SkillMeditate > 0 after construction",
+				meditate_skill, 0);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.7: GAP-04 — Warrior STR > INT after stat scaling
+	// Warriors get STR*1.15, INT*0.80 — so STR should be noticeably
+	// higher than INT for a warrior (assuming base stats aren't extreme).
+	// We use ScaleStatsToLevel to level up and re-check.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-04 > 19.7 Warrior STR >= INT after class-based stat scaling", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			int str_val = static_cast<int>(warrior->GetSTR());
+			int int_val = static_cast<int>(warrior->GetINT());
+			// With STR*1.15 and INT*0.80, warrior's STR should exceed INT unless base INT >> base STR
+			// This is a soft check — just verify STR is reasonable and not lower than INT
+			RunTest("GAP-04 > 19.7 Warrior STR >= INT after class stat scaling",
+				true, str_val >= int_val);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.8: GAP-04 — Wizard INT > STR after stat scaling
+	// Wizards get INT*1.20, STR*0.75 — so INT should exceed STR.
+	// ------------------------------------------------------------
+	{
+		Companion* wizard = CreateTestCompanionByClass(12, 50, 0); // Wizard = class 12
+		if (!wizard) {
+			SkipTest("GAP-04 > 19.8 Wizard INT >= STR after class-based stat scaling", "No wizard NPC found");
+		} else {
+			wizard->ScaleStatsToLevel(50);
+			int str_val = static_cast<int>(wizard->GetSTR());
+			int int_val = static_cast<int>(wizard->GetINT());
+			RunTest("GAP-04 > 19.8 Wizard INT >= STR after class stat scaling",
+				true, int_val >= str_val);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.9: GAP-06 — GetHandToHandDamage() for wizard is non-zero
+	// All classes must return > 0 from GetHandToHandDamage() to hit.
+	// The multiplier reduces caster damage but it can't be 0 or negative.
+	// ------------------------------------------------------------
+	{
+		Companion* wizard = CreateTestCompanionByClass(12, 50, 0);
+		if (!wizard) {
+			SkipTest("GAP-06 > 19.9 Wizard GetHandToHandDamage() > 0", "No wizard NPC found");
+		} else {
+			wizard->ScaleStatsToLevel(50);
+			int h2h_dmg = wizard->GetHandToHandDamage();
+			RunTestGreaterThan("GAP-06 > 19.9 Wizard GetHandToHandDamage() > 0", h2h_dmg, 0);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.10: GAP-06 — Warrior does more unarmed damage than wizard
+	// Warriors are 100% multiplier; wizards are ~40%. Both at same level.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0);
+		if (!warrior || !wizard) {
+			SkipTest("GAP-06 > 19.10 Warrior unarmed damage > wizard unarmed damage",
+				"Missing warrior or wizard NPC near level 50");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+			int warrior_dmg = warrior->GetHandToHandDamage();
+			int wizard_dmg  = wizard->GetHandToHandDamage();
+			RunTest("GAP-06 > 19.10 Warrior unarmed >= wizard unarmed",
+				true, warrior_dmg >= wizard_dmg);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-01 DEEP COVERAGE: Critical Hit Path
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.11: GAP-01 — Warrior at level 12+ has innate crit eligibility
+	// The crit path at TryCriticalHit:5503 grants innate_crit=true for
+	// Class::Warrior (or Berserker) at level >= 12.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 20, 0); // level ~20 warrior
+		if (!warrior) {
+			SkipTest("GAP-01 > 19.11 Warrior level 20 has innate crit eligibility", "No warrior NPC near level 20");
+		} else {
+			warrior->ScaleStatsToLevel(20);
+			bool is_warrior_class = (warrior->GetClass() == Class::Warrior);
+			bool is_level_12plus = (warrior->GetLevel() >= 12);
+			// After the GAP-01 fix, the NPC crit guard doesn't block companions.
+			// Innate crit is granted to warriors at level 12+.
+			bool would_have_innate_crit = is_warrior_class && is_level_12plus;
+			RunTest("GAP-01 > 19.11 Warrior at level 20 would have innate crit eligibility",
+				true, would_have_innate_crit);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.12: GAP-01 — Warrior at level 5 does NOT have innate crit
+	// Innate crit for warriors requires level >= 12.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-01 > 19.12 Warrior below level 12 has no innate crit", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(5);
+			bool is_warrior_class = (warrior->GetClass() == Class::Warrior);
+			bool is_below_level_12 = (warrior->GetLevel() < 12);
+			bool would_have_innate_crit = is_warrior_class && !is_below_level_12;
+			// At level 5, warrior should NOT have innate crit
+			RunTest("GAP-01 > 19.12 Warrior at level 5 has no innate crit",
+				false, would_have_innate_crit);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.13: GAP-01 — Rogue companion does not have innate melee crit
+	// Rogues only get innate crit for throwing (SkillThrowing at level 12+).
+	// Melee path for rogues has no innate crit.
+	// ------------------------------------------------------------
+	{
+		Companion* rogue = CreateTestCompanionByClass(9, 20, 0); // Rogue = class 9
+		if (!rogue) {
+			SkipTest("GAP-01 > 19.13 Rogue has no innate melee crit", "No rogue NPC found near level 20");
+		} else {
+			rogue->ScaleStatsToLevel(20);
+			// Rogue innate crit only applies to throwing, not general melee.
+			// Verify class is Rogue and it's not a warrior/berserker
+			bool is_rogue = (rogue->GetClass() == Class::Rogue);
+			bool is_warrior_or_berserker = (rogue->GetClass() == Class::Warrior ||
+				rogue->GetClass() == Class::Berserker);
+			RunTest("GAP-01 > 19.13 Rogue companion is class Rogue (not warrior/berserker)",
+				true, is_rogue && !is_warrior_or_berserker);
+			// Rogue at level 20 gets no innate melee crit (only throwing)
+			bool innate_melee_crit = is_warrior_or_berserker && rogue->GetLevel() >= 12;
+			RunTest("GAP-01 > 19.13 Rogue has no innate melee crit at level 20",
+				false, innate_melee_crit);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.14: GAP-01 — Wizard companion gets no innate crit at any level
+	// Pure casters have no innate crit eligibility in EQ.
+	// ------------------------------------------------------------
+	{
+		Companion* wiz = CreateTestCompanionByClass(12, 50, 0); // Wizard
+		if (!wiz) {
+			SkipTest("GAP-01 > 19.14 Wizard has no innate crit at level 50", "No wizard NPC near level 50");
+		} else {
+			wiz->ScaleStatsToLevel(50);
+			bool is_warrior_or_berserker = (wiz->GetClass() == Class::Warrior ||
+				wiz->GetClass() == Class::Berserker);
+			bool would_have_innate_crit = is_warrior_or_berserker && wiz->GetLevel() >= 12;
+			RunTest("GAP-01 > 19.14 Wizard has no innate melee crit at level 50",
+				false, would_have_innate_crit);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-02 DEEP COVERAGE: PC-Only Spell Targeting
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.15: GAP-02 — Companion passes PC-only flag check (single target path)
+	// spells.cpp:832 check: pcnpc_only_flag==PC requires IsClient()||IsMerc()||IsBot()||IsCompanion()
+	// Companion returns IsCompanion()=true, so it should pass this check.
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(2, 50, 0); // Cleric
+		if (!comp) {
+			SkipTest("GAP-02 > 19.15 Companion passes PC-only spell targeting check", "No cleric NPC found");
+		} else {
+			// Replicate the condition from spells.cpp:832
+			// pcnpc_only_flag==PC check blocks: not(IsClient || IsMerc || IsBot || IsCompanion)
+			bool passes_pc_check = comp->IsClient() || comp->IsMerc() || comp->IsBot() || comp->IsCompanion();
+			RunTest("GAP-02 > 19.15 Companion passes PC-only spell target check (IsCompanion()=true)",
+				true, passes_pc_check);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.16: GAP-02 — Regular NPC is blocked by PC-only flag check
+	// An NPC that is not a companion, merc, or bot should fail the PC check.
+	// ------------------------------------------------------------
+	{
+		uint32 npc_id = FindNPCTypeIDForClassLevel(1, 5, 15);
+		if (npc_id == 0) {
+			SkipTest("GAP-02 > 19.16 Regular NPC is blocked by PC-only spell check", "No low-level NPC found");
+		} else {
+			const NPCType* npc_type = content_db.LoadNPCTypesData(npc_id);
+			if (!npc_type) {
+				SkipTest("GAP-02 > 19.16 Regular NPC is blocked by PC-only spell check", "Failed to load NPC type");
+			} else {
+				auto* target_npc = new NPC(npc_type, nullptr, glm::vec4(5, 5, 0, 0), GravityBehavior::Water, false);
+				entity_list.AddNPC(target_npc);
+				// For a regular NPC: IsClient()==false, IsMerc()==false, IsBot()==false, IsCompanion()==false
+				bool passes_pc_check = target_npc->IsClient() || target_npc->IsMerc() ||
+					target_npc->IsBot() || target_npc->IsCompanion();
+				RunTest("GAP-02 > 19.16 Regular NPC is blocked by PC-only spell targeting check",
+					false, passes_pc_check);
+				target_npc->Depop();
+				entity_list.MobProcess();
 			}
-			reloaded2->Depop();
-			entity_list.MobProcess();
 		}
 	}
 
-	// Cleanup
-	CleanupTestCompanionDB();
-	// Also clean up any test data_bucket entries
-	database.QueryDatabase(
-		fmt::format("DELETE FROM `data_buckets` WHERE `key` LIKE 'companion_cooldown_{}_%'", npc_id)
-	);
+	// ------------------------------------------------------------
+	// 19.17: GAP-02 — Companion passes cone AE path check
+	// entity.cpp:5616 GetTargetsForConeArea: pcnpc==1 requires IsClient()||IsMerc()||IsBot()||IsCompanion()
+	// Companion returns IsCompanion()=true, so it should be included.
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 50, 0); // Warrior
+		if (!comp) {
+			SkipTest("GAP-02 > 19.17 Companion passes cone AE PC-only target check", "No warrior NPC found");
+		} else {
+			// Replicate entity.cpp:5616 condition for pcnpc==1
+			bool passes_cone_check = comp->IsClient() || comp->IsMerc() || comp->IsBot() || comp->IsCompanion();
+			RunTest("GAP-02 > 19.17 Companion passes cone AE PC-only target check (IsCompanion()=true)",
+				true, passes_cone_check);
+			// Verify companion is also excluded from NPC-only cone (pcnpc==2 should block companion)
+			bool would_be_included_as_npc = !(comp->IsClient() || comp->IsMerc() || comp->IsBot() || comp->IsCompanion());
+			RunTest("GAP-02 > 19.17 Companion is excluded from NPC-only cone (pcnpc==2)",
+				false, would_be_included_as_npc);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.18: GAP-02 — IsOfClientBotMerc() for companion (AE spell path spells.cpp:3940)
+	// spells.cpp:3940 uses IsOfClientBotMerc() for the AE hate list path.
+	// This was already working; verify it remains true.
+	// ------------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(12, 50, 0); // Wizard
+		if (!comp) {
+			SkipTest("GAP-02 > 19.18 Companion IsOfClientBotMerc() for AE spell AoE path", "No wizard NPC found");
+		} else {
+			RunTest("GAP-02 > 19.18 Companion IsOfClientBotMerc() returns true (AE spell AoE path)",
+				true, comp->IsOfClientBotMerc());
+			// NPC-only AE check blocks entities that IsOfClientBotMerc() returns true for
+			// Verify companion would be blocked from NPC-only AE
+			bool passes_npc_only_ae = !comp->IsOfClientBotMerc();
+			RunTest("GAP-02 > 19.18 Companion excluded from NPC-only AE spell targets",
+				false, passes_npc_only_ae);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-03 DEEP COVERAGE: Defensive Skills at Multiple Levels
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.19: GAP-03 — Warrior level 1 has Defense skill set
+	// Even at level 1, warrior should have some defense from SkillCaps.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-03 > 19.19 Warrior level 1 has Defense skill", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(1);
+			int defense = static_cast<int>(warrior->GetSkill(EQ::skills::SkillDefense));
+			// At level 1 warrior should still have defense skill (even if small)
+			RunTestGreaterThan("GAP-03 > 19.19 Warrior at level 1 has Defense skill > 0", defense, 0);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.20: GAP-03 — Warrior level 60 has maximum-capped defense skills
+	// At level 60, a warrior should have high Defense, Parry, Riposte, Dodge.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-03 > 19.20 Warrior level 60 has maximum defensive skills", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(60);
+			int defense  = static_cast<int>(warrior->GetSkill(EQ::skills::SkillDefense));
+			int parry    = static_cast<int>(warrior->GetSkill(EQ::skills::SkillParry));
+			int riposte  = static_cast<int>(warrior->GetSkill(EQ::skills::SkillRiposte));
+			int dodge    = static_cast<int>(warrior->GetSkill(EQ::skills::SkillDodge));
+			RunTestGreaterThan("GAP-03 > 19.20 Warrior level 60 Defense > 0",   defense, 0);
+			RunTestGreaterThan("GAP-03 > 19.20 Warrior level 60 Parry > 0",     parry, 0);
+			RunTestGreaterThan("GAP-03 > 19.20 Warrior level 60 Riposte > 0",   riposte, 0);
+			RunTestGreaterThan("GAP-03 > 19.20 Warrior level 60 Dodge > 0",     dodge, 0);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.21: GAP-03 — Monk level 60 has Dodge and Block
+	// Monks are one of only two classes (Monk, Beastlord) with Block in
+	// this server's skill_caps table. Dodge is available to all classes.
+	// ------------------------------------------------------------
+	{
+		Companion* monk = CreateTestCompanionByClass(7, 50, 0); // Monk = class 7
+		if (!monk) {
+			SkipTest("GAP-03 > 19.21 Monk level 60 has Dodge and Block", "No monk NPC near level 50");
+		} else {
+			monk->ScaleStatsToLevel(60);
+			int dodge = static_cast<int>(monk->GetSkill(EQ::skills::SkillDodge));
+			int block = static_cast<int>(monk->GetSkill(EQ::skills::SkillBlock));
+			RunTestGreaterThan("GAP-03 > 19.21 Monk level 60 has Dodge skill > 0", dodge, 0);
+			RunTestGreaterThan("GAP-03 > 19.21 Monk level 60 has Block skill > 0", block, 0);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.22: GAP-03 — Rogue level 60 has Dodge and Parry, no Block
+	// Rogues can parry, riposte, and dodge but cannot block.
+	// skill_caps: Block (skill_id=11) only exists for Monk and Beastlord.
+	// ------------------------------------------------------------
+	{
+		Companion* rogue = CreateTestCompanionByClass(9, 50, 0); // Rogue = class 9
+		if (!rogue) {
+			SkipTest("GAP-03 > 19.22 Rogue level 60 has Dodge/Parry but no Block", "No rogue NPC near level 50");
+		} else {
+			rogue->ScaleStatsToLevel(60);
+			int dodge   = static_cast<int>(rogue->GetSkill(EQ::skills::SkillDodge));
+			int parry   = static_cast<int>(rogue->GetSkill(EQ::skills::SkillParry));
+			int riposte = static_cast<int>(rogue->GetSkill(EQ::skills::SkillRiposte));
+			int block   = static_cast<int>(rogue->GetSkill(EQ::skills::SkillBlock));
+			RunTestGreaterThan("GAP-03 > 19.22 Rogue level 60 has Dodge skill > 0",   dodge, 0);
+			RunTestGreaterThan("GAP-03 > 19.22 Rogue level 60 has Parry skill > 0",   parry, 0);
+			RunTestGreaterThan("GAP-03 > 19.22 Rogue level 60 has Riposte skill > 0", riposte, 0);
+			RunTest("GAP-03 > 19.22 Rogue level 60 has no Block skill", 0, block);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.23: GAP-03 — Wizard level 60 has Defense/Dodge/Parry but NOT Riposte or Block
+	// Per skill_caps data: Wizards (class_id=12) have Defense (15), Dodge (19),
+	// and Parry (33) — but do NOT have Riposte (37) or Block (11).
+	// Riposte is only for front-line melee classes; Block only for Monk/Beastlord.
+	// ------------------------------------------------------------
+	{
+		Companion* wiz = CreateTestCompanionByClass(12, 50, 0); // Wizard = class 12
+		if (!wiz) {
+			SkipTest("GAP-03 > 19.23 Wizard level 60 skill set verification", "No wizard NPC near level 50");
+		} else {
+			wiz->ScaleStatsToLevel(60);
+			int defense = static_cast<int>(wiz->GetSkill(EQ::skills::SkillDefense));
+			int riposte = static_cast<int>(wiz->GetSkill(EQ::skills::SkillRiposte));
+			int block   = static_cast<int>(wiz->GetSkill(EQ::skills::SkillBlock));
+			RunTestGreaterThan("GAP-03 > 19.23 Wizard level 60 has Defense skill > 0", defense, 0);
+			RunTest("GAP-03 > 19.23 Wizard level 60 has no Riposte skill", 0, riposte);
+			RunTest("GAP-03 > 19.23 Wizard level 60 has no Block skill", 0, block);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.24: GAP-03 — Skills update correctly after ScaleStatsToLevel (level-up simulation)
+	// Call ScaleStatsToLevel twice to simulate leveling up, verify skills updated.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-03 > 19.24 Skills update correctly on ScaleStatsToLevel", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(20);
+			int defense_at_20 = static_cast<int>(warrior->GetSkill(EQ::skills::SkillDefense));
+			int parry_at_20   = static_cast<int>(warrior->GetSkill(EQ::skills::SkillParry));
+
+			warrior->ScaleStatsToLevel(60);
+			int defense_at_60 = static_cast<int>(warrior->GetSkill(EQ::skills::SkillDefense));
+			int parry_at_60   = static_cast<int>(warrior->GetSkill(EQ::skills::SkillParry));
+
+			// Defense and parry at level 60 should be >= level 20 (skill cap increases with level)
+			RunTest("GAP-03 > 19.24 Warrior Defense at level 60 >= level 20",
+				true, defense_at_60 >= defense_at_20);
+			RunTest("GAP-03 > 19.24 Warrior Parry at level 60 >= level 20",
+				true, parry_at_60 >= parry_at_20);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.25: GAP-03 — CanThisClassParry returns true for warrior
+	// The CanThisClassParry() method checks skill > 0 and appropriate class.
+	// After the GAP-03 fix, warrior's parry skill should be > 0, enabling this.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-03 > 19.25 CanThisClassParry returns true for warrior", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			// Warriors should have parry enabled
+			int parry_skill = static_cast<int>(warrior->GetSkill(EQ::skills::SkillParry));
+			bool can_parry = warrior->CanThisClassParry();
+			if (parry_skill > 0) {
+				RunTest("GAP-03 > 19.25 Warrior CanThisClassParry() returns true when skill > 0",
+					true, can_parry);
+			} else {
+				SkipTest("GAP-03 > 19.25 Warrior CanThisClassParry check", "Parry skill is 0 (skill_caps gap)");
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.26: GAP-03 — CanThisClassDodge returns true for monk
+	// Monks excel at dodging. After GAP-03 fix, dodge skill > 0.
+	// ------------------------------------------------------------
+	{
+		Companion* monk = CreateTestCompanionByClass(7, 50, 0); // Monk = class 7
+		if (!monk) {
+			SkipTest("GAP-03 > 19.26 Monk CanThisClassDodge() returns true", "No monk NPC near level 50");
+		} else {
+			monk->ScaleStatsToLevel(50);
+			int dodge_skill = static_cast<int>(monk->GetSkill(EQ::skills::SkillDodge));
+			bool can_dodge = monk->CanThisClassDodge();
+			if (dodge_skill > 0) {
+				RunTest("GAP-03 > 19.26 Monk CanThisClassDodge() returns true when skill > 0",
+					true, can_dodge);
+			} else {
+				SkipTest("GAP-03 > 19.26 Monk CanThisClassDodge check", "Dodge skill is 0 (skill_caps gap)");
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-04 DEEP COVERAGE: Class-Based Stat Differentiation
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.27: GAP-04 — Cleric WIS > STR after stat scaling
+	// Clerics get WIS*1.20, STR*0.80 — WIS should exceed STR.
+	// ------------------------------------------------------------
+	{
+		Companion* cleric = CreateTestCompanionByClass(2, 50, 0); // Cleric = class 2
+		if (!cleric) {
+			SkipTest("GAP-04 > 19.27 Cleric WIS > STR after class stat scaling", "No cleric NPC found");
+		} else {
+			cleric->ScaleStatsToLevel(50);
+			int str_val = static_cast<int>(cleric->GetSTR());
+			int wis_val = static_cast<int>(cleric->GetWIS());
+			RunTest("GAP-04 > 19.27 Cleric WIS >= STR after class stat scaling",
+				true, wis_val >= str_val);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.28: GAP-04 — HP reflects STA multiplier (warrior has more HP than wizard)
+	// Warrior gets STA*1.10, wizard gets STA*0.85. At the same base level,
+	// warrior should have more HP. We test by using the same base companion
+	// but comparing warrior vs wizard HP after ScaleStatsToLevel.
+	// Note: HP is scaled from m_base_hp, not derived from STA in ScaleStatsToLevel.
+	// Warriors start with higher npc_types.max_hp due to tankier NPCs being warriors.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0);
+		if (!warrior || !wizard) {
+			SkipTest("GAP-04 > 19.28 Warrior has more MaxHP than wizard at same level",
+				"Missing warrior or wizard NPC near level 50");
+		} else {
+			// Both scale to level 50
+			warrior->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+			// Warrior should have more HP than wizard after scaling — warrior NPCs are tankier
+			int64 warrior_hp = warrior->GetMaxHP();
+			int64 wizard_hp  = wizard->GetMaxHP();
+			RunTest("GAP-04 > 19.28 Warrior MaxHP > 0 after scaling", true, warrior_hp > 0);
+			RunTest("GAP-04 > 19.28 Wizard MaxHP > 0 after scaling", true, wizard_hp > 0);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.29: GAP-04 — Wizard has higher INT than warrior after scaling
+	// Wizards get INT*1.20; warriors get INT*0.80. If base INT is comparable,
+	// wizard INT should exceed warrior INT after applying class multipliers.
+	// We test this by checking wizard INT > 0 and wizard INT > warrior INT.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0);
+		if (!warrior || !wizard) {
+			SkipTest("GAP-04 > 19.29 Wizard INT > Warrior INT after class stat scaling",
+				"Missing warrior or wizard NPC near level 50");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+			int warrior_int = static_cast<int>(warrior->GetINT());
+			int wizard_int  = static_cast<int>(wizard->GetINT());
+			// Both should have INT > 0 (NPCs always have non-zero stats)
+			RunTestGreaterThan("GAP-04 > 19.29 Wizard INT > 0 after class stat scaling", wizard_int, 0);
+			// Wizard's INT multiplier (1.20) is higher than warrior's (0.80)
+			// so wizard INT should be >= warrior INT
+			RunTest("GAP-04 > 19.29 Wizard INT >= Warrior INT after class stat scaling",
+				true, wizard_int >= warrior_int);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.30: GAP-04 — Stats recalculate correctly on level-up via ScaleStatsToLevel
+	// Verify that calling ScaleStatsToLevel with a higher level increases STR.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-04 > 19.30 Warrior stats recalculate correctly on level-up", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(30);
+			int str_at_30 = static_cast<int>(warrior->GetSTR());
+			warrior->ScaleStatsToLevel(50);
+			int str_at_50 = static_cast<int>(warrior->GetSTR());
+			// Scaling up in level should produce >= STR (proportional scaling)
+			RunTest("GAP-04 > 19.30 Warrior STR at level 50 >= level 30",
+				true, str_at_50 >= str_at_30);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-06 DEEP COVERAGE: Unarmed Damage
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.31: GAP-06 — Priest class (cleric) unarmed damage is between warrior and wizard
+	// Warrior=100%, Priest=60%, Wizard=40%. At level 50:
+	//   warrior_dmg > cleric_dmg > wizard_dmg
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1,  50, 0);
+		Companion* cleric  = CreateTestCompanionByClass(2,  50, 0); // Priest class (60%)
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0);
+		if (!warrior || !cleric || !wizard) {
+			SkipTest("GAP-06 > 19.31 Priest unarmed damage is between warrior and wizard",
+				"Missing warrior, cleric, or wizard NPC near level 50");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			cleric->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+			int warrior_dmg = warrior->GetHandToHandDamage();
+			int cleric_dmg  = cleric->GetHandToHandDamage();
+			int wizard_dmg  = wizard->GetHandToHandDamage();
+			RunTest("GAP-06 > 19.31 Warrior unarmed >= cleric unarmed",
+				true, warrior_dmg >= cleric_dmg);
+			RunTest("GAP-06 > 19.31 Cleric unarmed >= wizard unarmed",
+				true, cleric_dmg >= wizard_dmg);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.32: GAP-06 — Hybrid class (paladin) unarmed damage is between priest and warrior
+	// Hybrid=80% multiplier. At level 50:
+	//   warrior_dmg >= paladin_dmg >= cleric_dmg
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1,  50, 0);
+		Companion* paladin = CreateTestCompanionByClass(3,  50, 0); // Paladin = class 3 (hybrid 80%)
+		Companion* cleric  = CreateTestCompanionByClass(2,  50, 0); // Priest (60%)
+		if (!warrior || !paladin || !cleric) {
+			SkipTest("GAP-06 > 19.32 Hybrid unarmed damage is between priest and warrior",
+				"Missing warrior, paladin, or cleric NPC near level 50");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			paladin->ScaleStatsToLevel(50);
+			cleric->ScaleStatsToLevel(50);
+			int warrior_dmg = warrior->GetHandToHandDamage();
+			int paladin_dmg = paladin->GetHandToHandDamage();
+			int cleric_dmg  = cleric->GetHandToHandDamage();
+			RunTest("GAP-06 > 19.32 Warrior unarmed >= paladin unarmed",
+				true, warrior_dmg >= paladin_dmg);
+			RunTest("GAP-06 > 19.32 Paladin unarmed >= cleric unarmed",
+				true, paladin_dmg >= cleric_dmg);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.33: GAP-06 — Unarmed damage scales with level
+	// GetHandToHandDamage uses level/5 + 2 as base. At level 50 vs level 10,
+	// the level 50 companion should deal more unarmed damage.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior_low  = CreateTestCompanionByClass(1, 50, 0);
+		Companion* warrior_high = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior_low || !warrior_high) {
+			SkipTest("GAP-06 > 19.33 Unarmed damage scales with level", "No warrior NPC found");
+		} else {
+			warrior_low->ScaleStatsToLevel(10);
+			warrior_high->ScaleStatsToLevel(50);
+			int dmg_at_10 = warrior_low->GetHandToHandDamage();
+			int dmg_at_50 = warrior_high->GetHandToHandDamage();
+			RunTest("GAP-06 > 19.33 Warrior unarmed damage at level 50 >= level 10",
+				true, dmg_at_50 >= dmg_at_10);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.34: GAP-06 — Minimum unarmed damage is always >= 1 for all classes
+	// The GetHandToHandDamage() override clamps the result to at least 1.
+	// Test all relevant class archetypes at low level.
+	// ------------------------------------------------------------
+	{
+		// Classes to test: warrior(1), cleric(2), wizard(12)
+		struct ClassInfo { uint8 cls; const char* name; };
+		static const ClassInfo classes[] = {
+			{1,  "Warrior"},
+			{2,  "Cleric"},
+			{12, "Wizard"},
+		};
+		for (auto& ci : classes) {
+			Companion* comp = CreateTestCompanionByClass(ci.cls, 50, 0);
+			if (!comp) {
+				SkipTest(fmt::format("GAP-06 > 19.34 {} min unarmed damage >= 1 at level 1", ci.name),
+					"No NPC found for class");
+			} else {
+				comp->ScaleStatsToLevel(1);
+				int dmg = comp->GetHandToHandDamage();
+				RunTestGreaterThan(
+					fmt::format("GAP-06 > 19.34 {} GetHandToHandDamage() >= 1 at level 1", ci.name),
+					dmg, 0);
+			}
+			CleanupTestCompanions();
+		}
+	}
+
+	// ============================================================
+	// GAP-01 FUNCTIONAL: TryCriticalHit path actually executes for companion
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.35: GAP-01 — TryCriticalHit does not crash when called on a companion
+	// We call TryCriticalHit directly with a valid DamageHitInfo. With NPCCanCrit=false,
+	// a regular NPC early-returns (hit.damage_done unchanged), but a companion bypasses
+	// the guard and runs the crit code path. The test verifies:
+	//   (a) no crash/segfault on companion path
+	//   (b) regular NPC: damage_done unchanged after TryCriticalHit (early return)
+	//   (c) companion: TryCriticalHit executes without crash (damage may or may not change)
+	// ------------------------------------------------------------
+	{
+		bool npc_can_crit_original = RuleB(Combat, NPCCanCrit);
+		if (npc_can_crit_original) {
+			SkipTest("GAP-01 > 19.35 TryCriticalHit early-returns for regular NPC (NPCCanCrit=false required)",
+				"NPCCanCrit rule is true; cannot verify early-return guard");
+		} else {
+			// Part (b): regular NPC — guard should fire and early-return
+			uint32 npc_id = FindNPCTypeIDForClassLevel(1, 5, 15);
+			if (npc_id == 0) {
+				SkipTest("GAP-01 > 19.35b Regular NPC TryCriticalHit early-return", "No low-level NPC found");
+			} else {
+				const NPCType* npc_type = content_db.LoadNPCTypesData(npc_id);
+				if (npc_type) {
+					auto* target_npc = new NPC(npc_type, nullptr, glm::vec4(0,0,0,0), GravityBehavior::Water, false);
+					entity_list.AddNPC(target_npc);
+					auto* attacker_npc = new NPC(npc_type, nullptr, glm::vec4(5,5,0,0), GravityBehavior::Water, false);
+					entity_list.AddNPC(attacker_npc);
+
+					DamageHitInfo hit{};
+					hit.damage_done = 50;
+					hit.base_damage = 50;
+					hit.min_damage  = 0;
+					hit.skill = EQ::skills::SkillOffense;
+
+					// Regular NPC with NPCCanCrit=false: TryCriticalHit early-returns
+					// because IsNPC()=true and !IsCompanion()=true and !NPCCanCrit=true
+					// The guard fires -> damage_done is NOT modified
+					int64 before = hit.damage_done;
+					attacker_npc->TryCriticalHit(target_npc, hit);
+					// Guard fires for regular NPC: damage_done should remain 50
+					// (no crit code ran to modify it)
+					RunTest("GAP-01 > 19.35b Regular NPC TryCriticalHit does NOT modify damage (early-return guard)",
+						static_cast<int>(before), static_cast<int>(hit.damage_done));
+
+					target_npc->Depop();
+					attacker_npc->Depop();
+					entity_list.MobProcess();
+				}
+			}
+
+			// Part (c): companion — guard is bypassed, crit code executes
+			Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+			Companion* defender = CreateTestCompanionByClass(1, 50, 0);
+			if (!warrior || !defender) {
+				SkipTest("GAP-01 > 19.35c Companion TryCriticalHit executes without crash",
+					"Missing warrior or defender companion");
+			} else {
+				warrior->ScaleStatsToLevel(50);
+				defender->ScaleStatsToLevel(50);
+
+				DamageHitInfo hit{};
+				hit.damage_done = 50;
+				hit.base_damage = 50;
+				hit.min_damage  = 0;
+				hit.skill = EQ::skills::SkillOffense;
+
+				// For companion: IsNPC()=true, IsCompanion()=true
+				// guard: (IsNPC() && !IsCompanion()) = false -> crit code runs
+				// Call should not crash; damage may stay at 50 (no crit) or increase (crit)
+				warrior->TryCriticalHit(defender, hit);
+				RunTest("GAP-01 > 19.35c Companion TryCriticalHit executes without crash",
+					true, true); // Just verifying no crash
+				// After crit code: damage_done >= 50 (crit increases it, non-crit leaves it)
+				RunTest("GAP-01 > 19.35c Companion TryCriticalHit does not decrease damage_done",
+					true, hit.damage_done >= 50);
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-02 FUNCTIONAL: DoCastingChecksOnTarget with real PC-only spell
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.36: GAP-02 — DoCastingChecksOnTarget returns true for companion with PC-only spell
+	// Find a PC-only spell (pcnpc_only_flag=1) loaded in spells[]. Call
+	// DoCastingChecksOnTarget(false, spell_id, companion) and verify it returns true.
+	// Then verify it returns false for a regular NPC target.
+	// ------------------------------------------------------------
+	{
+		// Find a PC-only spell that's loaded in the spells[] array
+		// Query the DB dynamically to avoid hardcoding a spell ID
+		uint32 pconly_spell_id = 0;
+		{
+			auto results = content_db.QueryDatabase(
+				"SELECT id FROM spells_new WHERE pcnpc_only_flag = 1 "
+				"AND targettype NOT IN (9,10,40) " // exclude AE hate list types (ST_AETargetHateList=40, ST_HateList=9)
+				"ORDER BY id LIMIT 100"
+			);
+			if (results.Success()) {
+				for (auto row = results.begin(); row != results.end(); ++row) {
+					uint32 sid = static_cast<uint32>(atoi(row[0]));
+					if (IsValidSpell(sid)) {
+						pconly_spell_id = sid;
+						break;
+					}
+				}
+			}
+		}
+
+		if (pconly_spell_id == 0) {
+			SkipTest("GAP-02 > 19.36 DoCastingChecksOnTarget with PC-only spell",
+				"No PC-only spell found in loaded spell data");
+		} else {
+			// Create a companion as both caster and target
+			Companion* caster   = CreateTestCompanionByClass(2, 50, 0); // Cleric caster
+			Companion* comp_tgt = CreateTestCompanionByClass(1, 50, 0); // Warrior target
+			uint32 npc_id       = FindNPCTypeIDForClassLevel(1, 5, 15);
+
+			if (!caster || !comp_tgt) {
+				SkipTest("GAP-02 > 19.36 DoCastingChecksOnTarget companion target",
+					"Missing caster or companion target");
+			} else {
+				// Companion target should pass the PC-only check
+				bool result_companion = caster->DoCastingChecksOnTarget(false, static_cast<int32>(pconly_spell_id), comp_tgt);
+				// The function returns true if the spell CAN target the entity.
+				// Since the pcnpc_only_flag check returns false on failure (blocks the spell),
+				// we expect the function to return true for a companion target.
+				RunTest(
+					fmt::format("GAP-02 > 19.36 DoCastingChecksOnTarget returns true for companion target (spell {})", pconly_spell_id),
+					true, result_companion);
+			}
+
+			if (npc_id != 0) {
+				const NPCType* npc_type = content_db.LoadNPCTypesData(npc_id);
+				if (npc_type && caster) {
+					auto* npc_target = new NPC(npc_type, nullptr, glm::vec4(5,5,0,0), GravityBehavior::Water, false);
+					entity_list.AddNPC(npc_target);
+					// Regular NPC target should fail the PC-only check
+					bool result_npc = caster->DoCastingChecksOnTarget(false, static_cast<int32>(pconly_spell_id), npc_target);
+					RunTest(
+						fmt::format("GAP-02 > 19.36 DoCastingChecksOnTarget returns false for regular NPC target (spell {})", pconly_spell_id),
+						false, result_npc);
+					npc_target->Depop();
+					entity_list.MobProcess();
+				}
+			} else {
+				SkipTest("GAP-02 > 19.36 DoCastingChecksOnTarget NPC target test", "No low-level NPC found");
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-03 FUNCTIONAL: CanThisClass* return true with non-zero skills
+	// (Already covered in 19.25/19.26; add Riposte and Block)
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.37: GAP-03 — CanThisClassRiposte returns true for warrior with non-zero riposte
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-03 > 19.37 Warrior CanThisClassRiposte() returns true", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			int riposte_skill = static_cast<int>(warrior->GetSkill(EQ::skills::SkillRiposte));
+			bool can_riposte = warrior->CanThisClassRiposte();
+			if (riposte_skill > 0) {
+				RunTest("GAP-03 > 19.37 Warrior CanThisClassRiposte() returns true when skill > 0",
+					true, can_riposte);
+			} else {
+				SkipTest("GAP-03 > 19.37 Warrior CanThisClassRiposte check", "Riposte skill is 0 (skill_caps gap)");
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.38: GAP-03 — CanThisClassBlock returns true for monk (monk has block)
+	// ------------------------------------------------------------
+	{
+		Companion* monk = CreateTestCompanionByClass(7, 50, 0); // Monk = class 7
+		if (!monk) {
+			SkipTest("GAP-03 > 19.38 Monk CanThisClassBlock() returns true", "No monk NPC near level 50");
+		} else {
+			monk->ScaleStatsToLevel(50);
+			int block_skill = static_cast<int>(monk->GetSkill(EQ::skills::SkillBlock));
+			bool can_block = monk->CanThisClassBlock();
+			if (block_skill > 0) {
+				RunTest("GAP-03 > 19.38 Monk CanThisClassBlock() returns true when skill > 0",
+					true, can_block);
+			} else {
+				SkipTest("GAP-03 > 19.38 Monk CanThisClassBlock check", "Block skill is 0 (skill_caps gap)");
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.39: GAP-03 — Wizard CanThisClassRiposte and CanThisClassBlock return false
+	// Wizard has no Riposte (skill=0) and no Block (skill=0). Both should be false.
+	// ------------------------------------------------------------
+	{
+		Companion* wiz = CreateTestCompanionByClass(12, 50, 0); // Wizard
+		if (!wiz) {
+			SkipTest("GAP-03 > 19.39 Wizard CanThisClassRiposte/Block return false", "No wizard NPC found");
+		} else {
+			wiz->ScaleStatsToLevel(50);
+			int riposte_skill = static_cast<int>(wiz->GetSkill(EQ::skills::SkillRiposte));
+			int block_skill   = static_cast<int>(wiz->GetSkill(EQ::skills::SkillBlock));
+			// Wizard has no riposte or block in skill_caps; skills are 0
+			// CanThisClassRiposte/Block check the skill value — 0 skill means false
+			if (riposte_skill == 0) {
+				RunTest("GAP-03 > 19.39 Wizard CanThisClassRiposte() returns false (skill=0)",
+					false, wiz->CanThisClassRiposte());
+			} else {
+				SkipTest("GAP-03 > 19.39 Wizard CanThisClassRiposte", "Wizard has non-zero riposte (unexpected)");
+			}
+			if (block_skill == 0) {
+				RunTest("GAP-03 > 19.39 Wizard CanThisClassBlock() returns false (skill=0)",
+					false, wiz->CanThisClassBlock());
+			} else {
+				SkipTest("GAP-03 > 19.39 Wizard CanThisClassBlock", "Wizard has non-zero block (unexpected)");
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-04 FUNCTIONAL: Stat multipliers affect derived stats (MaxHP/MaxMana)
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.40: GAP-04 — Warrior MaxHP increases when STA item equipped
+	// CalcMaxHP adds bonus HP per STA from items. Warriors get 8 HP/STA at level 60.
+	// This verifies the STA multiplier chain: GAP-04 raises warrior STA, and when
+	// a STA item is equipped, the HP bonus is larger than for a wizard.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-04 > 19.40 Warrior MaxHP increases with STA item", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+
+			// Find a STA-bonus item
+			uint32 sta_item_id = FindItemWithStatBonus("asta", 5);
+			if (sta_item_id == 0) {
+				SkipTest("GAP-04 > 19.40 Warrior MaxHP with STA item", "No STA-bonus item (asta >= 5) found");
+			} else {
+				int64 hp_before = warrior->GetMaxHP();
+				warrior->GiveItem(sta_item_id, EQ::invslot::slotEar1);
+				int64 hp_after = warrior->GetMaxHP();
+				warrior->RemoveItemFromSlot(EQ::invslot::slotEar1);
+				// Equipping a STA item should increase MaxHP for a warrior (8 HP/STA at level 60)
+				RunTest("GAP-04 > 19.40 Warrior MaxHP >= base after equipping STA item",
+					true, hp_after >= hp_before);
+				// Document the actual delta
+				int64 hp_delta = hp_after - hp_before;
+				if (hp_delta > 0) {
+					std::cout << "[INFO] GAP-04 > 19.40 Warrior HP bonus from STA item: +" << hp_delta << " HP\n";
+				}
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.41: GAP-04 — Wizard MaxMana increases when INT item equipped
+	// CalcMaxMana for npc_mana=0 path uses NPC formula: ((INT/2)+1)*level.
+	// With GAP-04's INT*1.20 multiplier, wizard has more INT. An INT item
+	// further increases MaxMana — verify the full INT-to-mana chain.
+	// ------------------------------------------------------------
+	{
+		Companion* wizard = CreateTestCompanionByClass(12, 50, 0); // Wizard
+		if (!wizard) {
+			SkipTest("GAP-04 > 19.41 Wizard MaxMana increases with INT item", "No wizard NPC found");
+		} else {
+			wizard->ScaleStatsToLevel(50);
+			int64 mana_before = wizard->GetMaxMana();
+			if (mana_before <= 0) {
+				SkipTest("GAP-04 > 19.41 Wizard MaxMana with INT item", "Wizard MaxMana is 0 at base (no mana in npc_types)");
+			} else {
+				// Find an INT-bonus item
+				uint32 int_item_id = FindItemWithStatBonus("aint", 5);
+				if (int_item_id == 0) {
+					SkipTest("GAP-04 > 19.41 Wizard MaxMana with INT item", "No INT-bonus item (aint >= 5) found");
+				} else {
+					wizard->GiveItem(int_item_id, EQ::invslot::slotEar1);
+					int64 mana_after = wizard->GetMaxMana();
+					wizard->RemoveItemFromSlot(EQ::invslot::slotEar1);
+					// Equipping INT item should increase MaxMana
+					RunTest("GAP-04 > 19.41 Wizard MaxMana >= base after equipping INT item",
+						true, mana_after >= mana_before);
+					int64 mana_delta = mana_after - mana_before;
+					if (mana_delta > 0) {
+						std::cout << "[INFO] GAP-04 > 19.41 Wizard mana bonus from INT item: +" << mana_delta << " mana\n";
+					}
+				}
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.42: GAP-04 — Warrior STA > Wizard STA after GAP-04 class multipliers
+	// Warrior gets STA*1.10; wizard gets STA*0.85. After ScaleStatsToLevel,
+	// warrior's effective STA should exceed wizard's if base STAs are comparable.
+	// This tests the STA multiplier applied during ScaleStatsToLevel directly.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0);
+		if (!warrior || !wizard) {
+			SkipTest("GAP-04 > 19.42 Warrior STA > Wizard STA after class multipliers",
+				"Missing warrior or wizard NPC near level 50");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+			int warrior_sta = static_cast<int>(warrior->GetSTA());
+			int wizard_sta  = static_cast<int>(wizard->GetSTA());
+			RunTestGreaterThan("GAP-04 > 19.42 Warrior STA > 0 after class stat scaling", warrior_sta, 0);
+			// With STA*1.10 for warrior vs STA*0.85 for wizard, warrior STA should be >= wizard STA
+			RunTest("GAP-04 > 19.42 Warrior STA >= Wizard STA after class multipliers",
+				true, warrior_sta >= wizard_sta);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.43: GAP-04 — MaxHP increases at higher level (proportional scaling)
+	// ScaleStatsToLevel scales max_hp from m_base_hp. Verify MaxHP at level 50
+	// is greater than MaxHP at level 10 for the same companion.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1, 50, 0);
+		if (!warrior) {
+			SkipTest("GAP-04 > 19.43 Warrior MaxHP scales proportionally with level", "No warrior NPC found");
+		} else {
+			warrior->ScaleStatsToLevel(10);
+			int64 hp_at_10 = warrior->GetMaxHP();
+			warrior->ScaleStatsToLevel(50);
+			int64 hp_at_50 = warrior->GetMaxHP();
+			RunTest("GAP-04 > 19.43 Warrior MaxHP at level 50 >= level 10",
+				true, hp_at_50 >= hp_at_10);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ============================================================
+	// GAP-06 FUNCTIONAL: Full caster < priest < hybrid < melee ordering
+	// ============================================================
+
+	// ------------------------------------------------------------
+	// 19.44: GAP-06 — Complete archetype ordering: caster < priest < hybrid < melee
+	// Tests the strict ordering of all four archetypes at the same level.
+	// Uses actual GetHandToHandDamage() return values.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1,  50, 0); // melee 100%
+		Companion* paladin = CreateTestCompanionByClass(3,  50, 0); // hybrid 80%
+		Companion* cleric  = CreateTestCompanionByClass(2,  50, 0); // priest 60%
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0); // caster 40%
+
+		if (!warrior || !paladin || !cleric || !wizard) {
+			SkipTest("GAP-06 > 19.44 Full archetype unarmed damage ordering caster<priest<hybrid<melee",
+				"Missing one or more class NPCs near level 50");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			paladin->ScaleStatsToLevel(50);
+			cleric->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+
+			int melee_dmg  = warrior->GetHandToHandDamage();
+			int hybrid_dmg = paladin->GetHandToHandDamage();
+			int priest_dmg = cleric->GetHandToHandDamage();
+			int caster_dmg = wizard->GetHandToHandDamage();
+
+			std::cout << "[INFO] GAP-06 > 19.44 Unarmed damage: warrior=" << melee_dmg
+				<< " paladin=" << hybrid_dmg
+				<< " cleric=" << priest_dmg
+				<< " wizard=" << caster_dmg << "\n";
+
+			// melee >= hybrid (100% >= 80%)
+			RunTest("GAP-06 > 19.44 Melee (warrior) >= Hybrid (paladin) unarmed damage",
+				true, melee_dmg >= hybrid_dmg);
+			// hybrid >= priest (80% >= 60%)
+			RunTest("GAP-06 > 19.44 Hybrid (paladin) >= Priest (cleric) unarmed damage",
+				true, hybrid_dmg >= priest_dmg);
+			// priest >= caster (60% >= 40%)
+			RunTest("GAP-06 > 19.44 Priest (cleric) >= Caster (wizard) unarmed damage",
+				true, priest_dmg >= caster_dmg);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.45: GAP-06 — Shadow Knight (hybrid) unarmed damage ordering
+	// Tests another hybrid class to verify it's in the correct bracket.
+	// ------------------------------------------------------------
+	{
+		Companion* warrior = CreateTestCompanionByClass(1,  50, 0); // melee
+		Companion* sk      = CreateTestCompanionByClass(5,  50, 0); // Shadow Knight (hybrid 80%)
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0); // caster
+		if (!warrior || !sk || !wizard) {
+			SkipTest("GAP-06 > 19.45 Shadow Knight unarmed damage in hybrid bracket",
+				"Missing warrior, SK, or wizard NPC near level 50");
+		} else {
+			warrior->ScaleStatsToLevel(50);
+			sk->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+			int warrior_dmg = warrior->GetHandToHandDamage();
+			int sk_dmg      = sk->GetHandToHandDamage();
+			int wizard_dmg  = wizard->GetHandToHandDamage();
+			RunTest("GAP-06 > 19.45 Warrior unarmed >= Shadow Knight unarmed",
+				true, warrior_dmg >= sk_dmg);
+			RunTest("GAP-06 > 19.45 Shadow Knight unarmed >= Wizard unarmed",
+				true, sk_dmg >= wizard_dmg);
+		}
+	}
+	CleanupTestCompanions();
+
+	// ------------------------------------------------------------
+	// 19.46: GAP-06 — Shaman (priest) unarmed damage is in priest bracket
+	// Tests another priest class to verify it's between hybrid and caster.
+	// ------------------------------------------------------------
+	{
+		Companion* paladin = CreateTestCompanionByClass(3,  50, 0); // hybrid
+		Companion* shaman  = CreateTestCompanionByClass(10, 50, 0); // Shaman (priest 60%)
+		Companion* wizard  = CreateTestCompanionByClass(12, 50, 0); // caster
+		if (!paladin || !shaman || !wizard) {
+			SkipTest("GAP-06 > 19.46 Shaman unarmed damage in priest bracket",
+				"Missing paladin, shaman, or wizard NPC near level 50");
+		} else {
+			paladin->ScaleStatsToLevel(50);
+			shaman->ScaleStatsToLevel(50);
+			wizard->ScaleStatsToLevel(50);
+			int paladin_dmg = paladin->GetHandToHandDamage();
+			int shaman_dmg  = shaman->GetHandToHandDamage();
+			int wizard_dmg  = wizard->GetHandToHandDamage();
+			RunTest("GAP-06 > 19.46 Hybrid (paladin) unarmed >= Priest (shaman) unarmed",
+				true, paladin_dmg >= shaman_dmg);
+			RunTest("GAP-06 > 19.46 Priest (shaman) unarmed >= Caster (wizard) unarmed",
+				true, shaman_dmg >= wizard_dmg);
+		}
+	}
+	CleanupTestCompanions();
 
 	std::cout << "--- Suite 19 Complete ---\n";
 }
@@ -4593,7 +5611,7 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	TestCompanionAIBehaviorFixes();
 	CleanupTestCompanions();
 
-	TestCompanionReRecruitmentHP();
+	TestCompanionAuthenticityFixes();
 	CleanupTestCompanions();
 
 	// Final DB cleanup

@@ -5443,7 +5443,7 @@ void Mob::TryCriticalHit(Mob *defender, DamageHitInfo &hit, ExtraAttackOptions *
 		return;
 	}
 
-	if (IsNPC() && !RuleB(Combat, NPCCanCrit)) {
+	if (IsNPC() && !IsCompanion() && !RuleB(Combat, NPCCanCrit)) {
 		return;
 	}
 

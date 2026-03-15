@@ -144,6 +144,10 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	// Apply global stat scale percentage
 	ApplyStatScalePct();
 
+	// GAP-03: Initialize class-appropriate defensive skills from SkillCaps table.
+	// Must be called after SetLevel() has been applied (level comes from the NPCType).
+	SetDefensiveSkillsFromCaps();
+
 	CalcBonuses();
 }
 
@@ -339,6 +343,89 @@ void Companion::ScaleStatsToLevel(uint8 current_level)
 	base_hp  = max_hp;
 	max_mana = (int64)(m_base_mana * scale);
 
+	// GAP-04: Apply class-based stat multipliers so each class has appropriate
+	// primary stats. Multipliers are conservative — melee get modest STR/STA
+	// boosts while casters get INT/WIS boosts, at the expense of physical stats.
+	// HP/mana are NOT re-derived here; they are scaled from base values above
+	// and preserved through CalcMaxHP/CalcMaxMana overrides.
+	uint8 cls = GetClass();
+	switch (cls) {
+		case Class::Warrior:
+			STR = (int32)(STR * 1.15f);
+			STA = (int32)(STA * 1.10f);
+			INT = (int32)(INT * 0.80f);
+			WIS = (int32)(WIS * 0.85f);
+			break;
+		case Class::Paladin:
+		case Class::ShadowKnight:
+			STR = (int32)(STR * 1.10f);
+			STA = (int32)(STA * 1.10f);
+			// Paladin: WIS boost; SK: INT boost
+			if (cls == Class::Paladin)
+				WIS = (int32)(WIS * 1.05f);
+			else
+				INT = (int32)(INT * 1.05f);
+			break;
+		case Class::Ranger:
+			STR = (int32)(STR * 1.05f);
+			DEX = (int32)(DEX * 1.10f);
+			WIS = (int32)(WIS * 1.05f);
+			INT = (int32)(INT * 0.85f);
+			break;
+		case Class::Rogue:
+			DEX = (int32)(DEX * 1.15f);
+			AGI = (int32)(AGI * 1.10f);
+			STR = (int32)(STR * 1.05f);
+			WIS = (int32)(WIS * 0.80f);
+			INT = (int32)(INT * 0.80f);
+			break;
+		case Class::Monk:
+			AGI = (int32)(AGI * 1.15f);
+			STA = (int32)(STA * 1.10f);
+			DEX = (int32)(DEX * 1.05f);
+			INT = (int32)(INT * 0.80f);
+			WIS = (int32)(WIS * 0.80f);
+			break;
+		case Class::Bard:
+			CHA = (int32)(CHA * 1.20f);
+			DEX = (int32)(DEX * 1.10f);
+			STR = (int32)(STR * 0.90f);
+			break;
+		case Class::Beastlord:
+			STR = (int32)(STR * 1.05f);
+			DEX = (int32)(DEX * 1.05f);
+			WIS = (int32)(WIS * 1.05f);
+			break;
+		case Class::Cleric:
+			WIS = (int32)(WIS * 1.20f);
+			STR = (int32)(STR * 0.80f);
+			INT = (int32)(INT * 0.90f);
+			break;
+		case Class::Druid:
+			WIS = (int32)(WIS * 1.15f);
+			DEX = (int32)(DEX * 1.05f);
+			STR = (int32)(STR * 0.85f);
+			break;
+		case Class::Shaman:
+			WIS = (int32)(WIS * 1.15f);
+			STA = (int32)(STA * 1.05f);
+			STR = (int32)(STR * 0.90f);
+			break;
+		case Class::Wizard:
+		case Class::Magician:
+		case Class::Enchanter:
+		case Class::Necromancer:
+			INT = (int32)(INT * 1.20f);
+			STR = (int32)(STR * 0.75f);
+			STA = (int32)(STA * 0.85f);
+			break;
+		default:
+			break;
+	}
+
+	// GAP-03: Set defensive skills from skill caps table now that level is set.
+	SetDefensiveSkillsFromCaps();
+
 	CalcBonuses();
 }
 
@@ -368,6 +455,86 @@ void Companion::ApplyStatScalePct()
 	max_hp   = (int64)(max_hp   * scale);
 	base_hp  = max_hp;
 	max_mana = (int64)(max_mana * scale);
+}
+
+// ============================================================
+// GAP-03: Set defensive skills from SkillCaps table (authenticity fix)
+// ============================================================
+
+void Companion::SetDefensiveSkillsFromCaps()
+{
+	// Key defensive and utility skills that every companion class should have.
+	// We only set skills that the class can actually learn (SkillCaps returns 0 for
+	// skills the class doesn't have). This mirrors Bot::FinishCombat() skill init.
+	static const EQ::skills::SkillType defensive_skills[] = {
+		EQ::skills::SkillDefense,
+		EQ::skills::SkillParry,
+		EQ::skills::SkillRiposte,
+		EQ::skills::SkillDodge,
+		EQ::skills::SkillBlock,
+		EQ::skills::SkillMeditate,
+		EQ::skills::SkillDoubleAttack,
+		EQ::skills::SkillDualWield,
+	};
+
+	uint8 cls   = GetClass();
+	uint8 lvl   = GetLevel();
+
+	for (auto skill : defensive_skills) {
+		uint16 cap = SkillCaps::Instance()->GetSkillCap(cls, skill, lvl).cap;
+		if (cap > 0) {
+			skills[static_cast<int>(skill)] = cap;
+		}
+	}
+}
+
+// ============================================================
+// GAP-06: Class-based unarmed damage override (authenticity fix)
+// ============================================================
+
+int Companion::GetHandToHandDamage(void)
+{
+	// Base damage scales with level, with a minimum of 2 (same as generic Mob::GetHandToHandDamage).
+	// Use level / 5 + 2 as a reasonable level-scaled base, then apply a class multiplier.
+	// This gives level 50 companions a base of 12 before the multiplier.
+	int base_dmg = GetLevel() / 5 + 2;
+
+	float multiplier = 1.0f;
+	switch (GetClass()) {
+		// Pure casters — weakest melee
+		case Class::Wizard:
+		case Class::Magician:
+		case Class::Enchanter:
+		case Class::Necromancer:
+			multiplier = 0.40f;
+			break;
+		// Priests — weak melee but stronger than pure casters
+		case Class::Cleric:
+		case Class::Druid:
+		case Class::Shaman:
+			multiplier = 0.60f;
+			break;
+		// Hybrids — moderate melee
+		case Class::Paladin:
+		case Class::ShadowKnight:
+		case Class::Ranger:
+		case Class::Bard:
+		case Class::Beastlord:
+			multiplier = 0.80f;
+			break;
+		// Pure melee — full damage
+		case Class::Warrior:
+		case Class::Monk:
+		case Class::Rogue:
+			multiplier = 1.0f;
+			break;
+		default:
+			multiplier = 1.0f;
+			break;
+	}
+
+	int dmg = static_cast<int>(base_dmg * multiplier);
+	return dmg < 1 ? 1 : dmg;
 }
 
 // ============================================================
