@@ -54,7 +54,8 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	  m_replacement_spawn_timer(RuleI(Companions, ReplacementSpawnDelayS) * 1000),
 	  m_ping_timer(5000),
 	  m_mana_report_timer(15000),
-	  m_sitting_regen_timer(6000)
+	  m_sitting_regen_timer(6000),
+	  m_rez_delay_timer(RuleI(Companions, RezPostCombatDelayS) * 1000)
 {
 	// Identity
 	m_companion_id          = 0;
@@ -74,10 +75,15 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	m_spawngroupid = 0;
 
 	// XP / history
-	m_companion_xp = 0;
-	m_total_kills  = 0;
-	m_times_died   = 0;
-	m_time_active  = 0;
+	m_companion_xp        = 0;
+	m_xp_lost_on_death    = 0;
+	m_total_kills         = 0;
+	m_times_died          = 0;
+	m_time_active         = 0;
+
+	// Rez AI state
+	m_rez_meditation_announced = false;
+	m_was_engaged              = false;
 	m_zones_visited = "[]";
 	m_active_since = static_cast<uint32>(time(nullptr));
 
@@ -118,6 +124,8 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 	// Disable death despawn timer until death occurs
 	m_death_despawn_timer.Disable();
 	m_replacement_spawn_timer.Disable();
+	// Rez delay timer starts disabled; enabled when combat ends
+	m_rez_delay_timer.Disable();
 	// Ping timer starts disabled; enabled in Process() when companion is stationary
 	m_ping_timer.Disable();
 	// Mana report timer starts disabled; enabled when companion sits to med
@@ -572,6 +580,11 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
                       EQ::skills::SkillType attack_skill,
                       KilledByTypes killed_by, bool is_buff_tic)
 {
+	// Apply XP death penalty before NPC::Death() so the corpse metadata (companion_id
+	// + owner_id) is set in attack.cpp and the rez system has correct data.
+	// Records loss in m_xp_lost_on_death for use by ResurrectFromCorpse().
+	ApplyDeathXPPenalty();
+
 	// Let the base NPC death handling run first (creates corpse, etc.)
 	bool result = NPC::Death(killer_mob, damage, spell_id, attack_skill, killed_by, is_buff_tic);
 
@@ -1799,6 +1812,23 @@ bool Companion::Process()
 		return false;
 	}
 
+	// Rez delay timer: track engaged-to-idle transition and start the post-combat
+	// settling window before healer companions attempt resurrection.
+	bool currently_engaged = IsEngaged();
+	if (m_was_engaged && !currently_engaged) {
+		// Combat just ended — start the rez delay timer
+		if (RuleB(Companions, RezEnabled)) {
+			m_rez_delay_timer.Start(RuleI(Companions, RezPostCombatDelayS) * 1000);
+			m_rez_meditation_announced = false;
+		}
+	}
+	m_was_engaged = currently_engaged;
+
+	// When the rez delay timer fires, disable it so AI_ResurrectDeadGroupMember() can proceed
+	if (m_rez_delay_timer.Enabled() && m_rez_delay_timer.Check()) {
+		m_rez_delay_timer.Disable();
+	}
+
 	// Check mercenary retention
 	if (m_retention_check_timer.Enabled() && m_retention_check_timer.Check()) {
 		CheckMercenaryRetention();
@@ -2113,8 +2143,11 @@ bool Companion::AI_EngagedCastCheck()
 
 bool Companion::AI_IdleCastCheck()
 {
-	// Only buff/heal when idle
-	return AICastSpell(GetChanceToCastBySpellType(0), SpellType_Buff | SpellType_Heal | SpellType_Pet);
+	// Buff, heal, pet maintenance, and resurrection when idle.
+	// SpellType_Resurrect is included here so AI_ResurrectDeadGroupMember()
+	// fires through the AICastSpell -> companion class handler path.
+	return AICastSpell(GetChanceToCastBySpellType(0),
+		SpellType_Buff | SpellType_Heal | SpellType_Pet | SpellType_Resurrect);
 }
 
 bool Companion::AI_PursueCastCheck()
@@ -3301,6 +3334,202 @@ uint32 Companion::GetXPForNextLevel() const
 	// Same formula EQEmu uses for players: level * level * 1000 (simplified)
 	uint8 level = GetLevel();
 	return (uint32)(level * level * 1000);
+}
+
+uint32 Companion::GetXPForCurrentLevel() const
+{
+	// XP required to gain the current level (i.e., from level-1 to level).
+	// This is the pool that XP death penalty and rez restoration are calculated against.
+	uint8 level = GetLevel();
+	if (level <= 1) {
+		return 0;
+	}
+	uint8 prev_level = level - 1;
+	return (uint32)(prev_level * prev_level * 1000);
+}
+
+void Companion::ApplyDeathXPPenalty()
+{
+	m_xp_lost_on_death = 0;
+	int penalty_pct = RuleI(Companions, XPDeathPenaltyPct);
+	if (penalty_pct <= 0) {
+		return;
+	}
+	uint32 level_xp = GetXPForCurrentLevel();
+	if (level_xp == 0) {
+		return; // level 1 companion — no penalty
+	}
+	uint32 xp_loss = (level_xp * static_cast<uint32>(penalty_pct)) / 100;
+	// Floor m_companion_xp at 0 — companions cannot have negative XP
+	if (m_companion_xp >= xp_loss) {
+		m_companion_xp -= xp_loss;
+	} else {
+		xp_loss = m_companion_xp;
+		m_companion_xp = 0;
+	}
+	m_xp_lost_on_death = xp_loss;
+
+	LogInfo("Companion [{}] death XP penalty: -{} XP ({}% of level {} pool {} XP)",
+	        GetName(), xp_loss, penalty_pct, GetLevel(), level_xp);
+}
+
+// ============================================================
+// Resurrection: ResurrectFromCorpse (static)
+// ============================================================
+
+void Companion::ResurrectFromCorpse(Corpse* corpse, uint16 spell_id, Mob* caster)
+{
+	if (!corpse || !corpse->IsCompanionCorpse()) {
+		return;
+	}
+
+	uint32 companion_id   = corpse->GetCompanionID();
+	uint32 owner_char_id  = corpse->GetCompanionOwnerID();
+
+	if (companion_id == 0 || owner_char_id == 0) {
+		LogError("Companion::ResurrectFromCorpse: invalid companion_id=[{}] or owner_char_id=[{}]",
+		         companion_id, owner_char_id);
+		return;
+	}
+
+	// Look up companion_data row
+	auto comp_data = CompanionDataRepository::FindOne(database, companion_id);
+	if (comp_data.id == 0) {
+		LogError("Companion::ResurrectFromCorpse: companion_data not found for id=[{}]", companion_id);
+		return;
+	}
+
+	// Look up the npc_types row
+	const NPCType* npc_type_data = content_db.LoadNPCTypesData(comp_data.npc_type_id);
+	if (!npc_type_data) {
+		LogError("Companion::ResurrectFromCorpse: NPCType not found for npc_type_id=[{}]",
+		         comp_data.npc_type_id);
+		return;
+	}
+
+	// Find the owning client
+	Client* owner = entity_list.GetClientByCharID(owner_char_id);
+	if (!owner) {
+		// Owner not in zone — rez cannot proceed (companion joins owner's group)
+		LogInfo("Companion::ResurrectFromCorpse: owner (char_id=[{}]) not in zone — rez skipped",
+		        owner_char_id);
+		return;
+	}
+
+	// Mark corpse as rezzed before we delete it so any concurrent spell completions skip it
+	corpse->IsRezzed(true);
+
+	// Calculate XP restoration from spell's base_value (rez % for first effect slot)
+	// spells[spell_id].base[0] stores the XP restoration percentage (e.g. 90 for 90% rez)
+	uint32 xp_restore_pct = 0;
+	if (IsValidSpell(spell_id)) {
+		int base_val = spells[spell_id].base_value[0];
+		if (base_val > 0) {
+			xp_restore_pct = static_cast<uint32>(base_val);
+		}
+	}
+
+	// Compute XP to restore at rez.
+	// The companion already had the death penalty deducted from experience before Save().
+	// We reconstruct the penalty amount from the stored level: penalty = XPDeathPenaltyPct%
+	// of the XP pool for the current level (i.e., (level-1)^2 * 1000).
+	// Then restore (rez_pct / 100) of that penalty.
+	uint32 xp_restore = 0;
+	if (xp_restore_pct > 0) {
+		uint8 saved_level = static_cast<uint8>(comp_data.level > 0 ? comp_data.level : 1);
+		if (saved_level > 1) {
+			uint8 prev = saved_level - 1;
+			uint32 level_xp = static_cast<uint32>(prev) * static_cast<uint32>(prev) * 1000;
+			uint32 penalty_pct = static_cast<uint32>(RuleI(Companions, XPDeathPenaltyPct));
+			uint32 xp_lost = (level_xp * penalty_pct) / 100;
+			xp_restore = (xp_lost * xp_restore_pct) / 100;
+		}
+	}
+
+	// DB update: restore XP and clear suspended flag BEFORE spawning new entity.
+	// This is crash-safe: if the server crashes after this UPDATE but before the entity
+	// is created, the companion is marked as active with restored XP — the player can
+	// unsuspend normally. If we crash before the UPDATE, the corpse still exists and
+	// another rez attempt can complete. (Architecture decision #9)
+	comp_data.is_suspended  = 0;
+	comp_data.cur_hp        = 0; // will be set to rez % of max by the new entity
+	comp_data.experience   += xp_restore;
+	CompanionDataRepository::UpdateOne(database, comp_data);
+
+	// Save the corpse position — we need it for spawn location
+	glm::vec4 corpse_pos = corpse->GetPosition();
+
+	// Remove the corpse entity from the zone
+	corpse->DepopNPCCorpse();
+
+	// Create the new companion entity at the corpse position
+	Companion* new_comp = new Companion(npc_type_data,
+	                                    corpse_pos.x, corpse_pos.y, corpse_pos.z, corpse_pos.w,
+	                                    owner_char_id, static_cast<uint8>(comp_data.companion_type));
+
+	// Apply saved data
+	new_comp->SetCompanionID(companion_id);
+	new_comp->SetOwnerCharacterID(owner_char_id);
+	new_comp->SetRecruitedNPCTypeID(comp_data.npc_type_id);
+	new_comp->SetRecruitedLevel(static_cast<uint8>(comp_data.recruited_level));
+	new_comp->SetStance(static_cast<uint8>(comp_data.stance));
+	new_comp->SetSuspended(false);
+	new_comp->SetDismissed(false);
+
+	// Add to zone entity list
+	entity_list.AddNPC(new_comp);
+
+	// Load companion spells and equipment
+	new_comp->AI_Start();
+	new_comp->Load(companion_id);
+	new_comp->LoadEquipment();
+	new_comp->CalcBonuses();
+
+	// Scale stats to the saved level
+	uint8 scale_level = static_cast<uint8>(comp_data.level > 0 ? comp_data.level : npc_type_data->level);
+	new_comp->ScaleStatsToLevel(scale_level);
+
+	// Post-rez stats: low HP based on the rez spell's value (10% of max HP minimum)
+	// For 90% rez → companion spawns with 90% * (90%/100) HP = ~81% base
+	// But per PRD: HP is set to a percentage of max HP based on the rez spell
+	// We use rez_pct directly as an HP fraction (same as EQ player rez behavior)
+	int64 max_hp = new_comp->GetMaxHP();
+	int64 rez_hp = max_hp;
+	if (xp_restore_pct > 0) {
+		rez_hp = (max_hp * static_cast<int64>(xp_restore_pct)) / 100;
+	} else {
+		// 0% rez (Revive) — spawn at 10% HP
+		rez_hp = max_hp / 10;
+	}
+	rez_hp = std::max(rez_hp, static_cast<int64>(1));
+	new_comp->SetHP(rez_hp);
+	new_comp->SetMana(0); // Post-rez: 0 mana
+	new_comp->BuffFadeAll(); // Strip all buffs
+
+	// Restore XP in the new entity (experience field is already updated with xp_restore above)
+	new_comp->m_companion_xp = static_cast<uint32>(comp_data.experience);
+
+	// Join owner's group and resume following
+	new_comp->CompanionJoinClientGroup();
+
+	// Announce rez to group
+	const char* dead_name   = comp_data.name.c_str();
+	const char* caster_name = caster ? caster->GetCleanName() : "unknown";
+
+	// Determine whether to use "resurrected" or "raised" (necromancer uses "raised")
+	bool is_necro_rez = caster && caster->IsCompanion() && caster->GetClass() == Class::Necromancer;
+	if (is_necro_rez) {
+		CompanionGroupSay(nullptr,
+			"%s has been raised by %s.", dead_name, caster_name);
+	} else {
+		CompanionGroupSay(nullptr,
+			"%s has been resurrected by %s.", dead_name, caster_name);
+	}
+
+	LogInfo("Companion [{}] (id={}) resurrected at ({:.1f},{:.1f},{:.1f}) by [{}], HP={}/{}, XP restored={}",
+	        dead_name, companion_id,
+	        corpse_pos.x, corpse_pos.y, corpse_pos.z,
+	        caster_name, rez_hp, max_hp, xp_restore);
 }
 
 // ============================================================

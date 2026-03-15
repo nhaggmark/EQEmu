@@ -27,6 +27,7 @@
 #include "common/rulesys.h"
 #include "common/spdat.h"
 #include "zone/bot.h"
+#include "zone/companion.h"
 #include "zone/lua_parser.h"
 #include "zone/quest_parser_collection.h"
 #include "zone/string_ids.h"
@@ -1709,13 +1710,21 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 #ifdef SPELL_EFFECT_SPAM
 				snprintf(effect_desc, _EDLEN, "Revive");	// heh the corpse won't see this
 #endif
-				if (IsCorpse() && CastToCorpse()->IsPlayerCorpse()) {
-
-					if(caster)
-						LogSpells("corpse being rezzed using spell [{}] by [{}]",
-							spell_id, caster->GetName());
-
-					CastToCorpse()->CastRezz(spell_id, caster);
+				if (IsCorpse()) {
+					if (CastToCorpse()->IsPlayerCorpse()) {
+						if (caster) {
+							LogSpells("corpse being rezzed using spell [{}] by [{}]",
+								spell_id, caster->GetName());
+						}
+						CastToCorpse()->CastRezz(spell_id, caster);
+					} else if (CastToCorpse()->IsCompanionCorpse()) {
+						// Companion corpses auto-accept rez — no consent dialog needed.
+						if (caster) {
+							LogSpells("companion corpse being rezzed using spell [{}] by [{}]",
+								spell_id, caster->GetName());
+						}
+						Companion::ResurrectFromCorpse(CastToCorpse(), spell_id, caster);
+					}
 				}
 				break;
 			}

@@ -2904,6 +2904,19 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 
 		entity_list.AddCorpse(corpse, GetID());
 
+		// Companion corpse configuration: strip loot, set companion metadata,
+		// and extend decay time to match the 30-min death despawn window.
+		// Companion equipment is persisted in companion_inventories — corpses
+		// serve only as rez targets, not loot sources.
+		if (IsCompanion()) {
+			Companion* comp = CastToCompanion();
+			corpse->ClearAllLoot();
+			corpse->SetCompanionData(comp->GetCompanionID(), comp->GetOwnerCharacterID());
+			// Override the NPC-level decay timer so the corpse persists for the full
+			// 30-minute death despawn window (matching Companions::DeathDespawnS rule).
+			corpse->SetDecayTimer(RuleI(Companions, DeathDespawnS) * 1000);
+		}
+
 		// The client sees NPC corpses as name's_corpse.  The server uses
 		// name`s_corpse so that %T works on corpses (client workaround)
 		// Rename the new corpse on client side.

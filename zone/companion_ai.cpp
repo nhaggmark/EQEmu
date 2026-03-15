@@ -44,6 +44,7 @@
 #include "common/rulesys.h"
 #include "common/spdat.h"
 #include "zone/client.h"
+#include "zone/corpse.h"
 #include "zone/entity.h"
 #include "zone/groups.h"
 #include "zone/merc.h"
@@ -1012,7 +1013,7 @@ bool Companion::AI_Paladin(uint32 iSpellTypes, bool is_defensive)
 			return AI_NukeTarget(SpellType_Nuke);
 		}
 	} else {
-		// Idle: cure > heal > buff
+		// Idle: cure > heal > resurrect dead > buff
 		if (iSpellTypes & SpellType_Cure) {
 			if (AI_CureGroupMember()) {
 				return true;
@@ -1020,6 +1021,11 @@ bool Companion::AI_Paladin(uint32 iSpellTypes, bool is_defensive)
 		}
 		if (iSpellTypes & SpellType_Heal) {
 			if (AI_HealGroupMember(false)) {
+				return true;
+			}
+		}
+		if (iSpellTypes & SpellType_Resurrect) {
+			if (AI_ResurrectDeadGroupMember()) {
 				return true;
 			}
 		}
@@ -1134,11 +1140,8 @@ bool Companion::AI_Cleric(uint32 iSpellTypes, bool is_defensive)
 			}
 		}
 		if (iSpellTypes & SpellType_Resurrect) {
-			uint32 now_ms = Timer::GetCurrentTime();
-			uint16 rez_spell = SelectFirstSpell(m_companion_spells, SpellType_Resurrect, m_current_stance, now_ms);
-			if (rez_spell) {
-				// Rezzing is done via the quest system; placeholder for future extension
-				// For now skip automatic corpse rezzing (needs corpse targeting logic)
+			if (AI_ResurrectDeadGroupMember()) {
+				return true;
 			}
 		}
 		if (iSpellTypes & SpellType_Buff) {
@@ -1674,6 +1677,12 @@ bool Companion::AI_Necromancer(uint32 iSpellTypes, bool is_defensive)
 			return AI_NukeTarget(SpellType_Nuke);
 		}
 	} else {
+		// Idle: resurrect dead > buff (necromancer always keeps bones walking)
+		if (iSpellTypes & SpellType_Resurrect) {
+			if (AI_ResurrectDeadGroupMember()) {
+				return true;
+			}
+		}
 		if (iSpellTypes & SpellType_Buff) {
 			return AI_BuffGroupMember();
 		}
@@ -1826,4 +1835,177 @@ bool Companion::AI_Generic(uint32 iSpellTypes, bool is_defensive)
 	}
 
 	return false;
+}
+
+// ============================================================
+// Task 9: Resurrection AI helpers
+//
+// FindDeadGroupMemberCorpse() — scan corpse_list for the
+// closest unrezzed companion corpse owned by any member of
+// this companion's group, within RezRange.  Only corpsps
+// that belong to this companion's group owner are eligible
+// (we don't rez strangers from other groups).
+//
+// AI_ResurrectDeadGroupMember() — full rez AI pipeline:
+//   1. Check RezEnabled rule
+//   2. Check post-combat delay timer is expired
+//   3. Task 12: multi-healer coordination — skip if another
+//      companion in the zone is already casting a rez
+//   4. FindDeadGroupMemberCorpse()
+//   5. Select best rez spell (mana-aware: pick cheapest if
+//      mana is below 50%)
+//   6. Mana check: if OOM, sit and announce meditation once
+//   7. AIDoSpellCast() on the corpse
+// ============================================================
+
+Corpse* Companion::FindDeadGroupMemberCorpse()
+{
+	Client* owner = GetCompanionOwner();
+	if (!owner) {
+		return nullptr;
+	}
+
+	// Only search within RezRange
+	int rez_range = RuleI(Companions, RezRange);
+
+	// We look for any companion corpse owned by this owner's character ID
+	// (each player can have one companion; if two companions are dead, we find
+	// the closest one — extension to multi-companion groups can sort by priority later)
+	return entity_list.GetCompanionCorpseByOwnerWithinRange(
+		owner->CharacterID(), this, rez_range);
+}
+
+// -------------------------------------------------------
+// Task 12: check whether any other companion in the zone is
+// actively casting a rez spell on a companion corpse.
+// Returns true if another rez is already in flight, meaning
+// this companion should skip its own rez attempt this tick.
+// -------------------------------------------------------
+static bool AnotherCompanionIsRezzing(Companion* self)
+{
+	const auto& comp_list = entity_list.GetCompanionList();
+
+	for (const auto& kv : comp_list) {
+		Companion* other = kv.second;
+		if (!other || other == self) {
+			continue;
+		}
+		if (!other->IsCasting()) {
+			continue;
+		}
+		// Check if the spell being cast is a SpellType_Resurrect spell
+		// by scanning the other companion's spell list
+		uint16 casting_id = other->CastingSpellID();
+		for (const auto& cs : other->GetCompanionSpells()) {
+			if (cs.spellid == casting_id && (cs.type & SpellType_Resurrect)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+// -------------------------------------------------------
+// Deity-flavored rez meditation line lookup.
+// Returns a class-themed message when the companion sits
+// to meditate before casting a rez spell.
+// -------------------------------------------------------
+static const char* GetRezMeditationLine(uint8 class_id)
+{
+	switch (class_id) {
+	case Class::Cleric:
+		return "I need to meditate before I can call upon Tunare's grace.";
+	case Class::Paladin:
+		return "I must rest my spirit before I can invoke the light.";
+	case Class::Necromancer:
+		return "I need to recover mana to commune with the dead.";
+	default:
+		return "I need to recover mana before I can attempt a resurrection.";
+	}
+}
+
+bool Companion::AI_ResurrectDeadGroupMember()
+{
+	if (!RuleB(Companions, RezEnabled)) {
+		return false;
+	}
+
+	// Post-combat delay: rez_delay_timer must have fired (i.e. combat just ended
+	// AND the delay has elapsed).  The timer is started on engaged->idle transition
+	// in Process() and disabled once it fires.  While still counting down, skip rez.
+	// Also skip if we never engaged (timer was never started — stays Disabled).
+	// We use Enabled() to mean "counting down, not yet fired"; if it's disabled
+	// the timer was never started or has already been consumed.
+	if (m_rez_delay_timer.Enabled()) {
+		// Timer is still counting down — not ready yet
+		return false;
+	}
+
+	// Task 12: multi-healer coordination — don't pile on if another companion
+	// is already channeling a rez spell
+	if (AnotherCompanionIsRezzing(this)) {
+		return false;
+	}
+
+	// Find a dead group member corpse we can rez
+	Corpse* target_corpse = FindDeadGroupMemberCorpse();
+	if (!target_corpse) {
+		return false;
+	}
+
+	// Select rez spell — prefer highest-quality rez when mana is healthy,
+	// fall back to cheaper / lower-% rez when below 50% mana
+	uint32 now_ms = Timer::GetCurrentTime();
+	uint16 rez_spell = 0;
+
+	float mana_ratio = GetManaRatio();
+	if (mana_ratio >= 50.0f) {
+		// Healthy mana: pick best rez (first by slot priority = highest quality)
+		rez_spell = SelectFirstSpell(m_companion_spells, SpellType_Resurrect, m_current_stance, now_ms);
+	} else {
+		// Low mana: pick the cheapest rez spell available (sort by mana cost ascending)
+		auto candidates = GetSpellsForType(m_companion_spells, SpellType_Resurrect, m_current_stance);
+		uint16 cheapest = 0;
+		int32  cheapest_mana = 0x7FFFFFFF;
+		for (const auto& cs : candidates) {
+			if (cs.time_cancast > now_ms) {
+				continue;
+			}
+			int32 spell_mana = spells[cs.spellid].mana;
+			if (spell_mana < cheapest_mana) {
+				cheapest_mana = spell_mana;
+				cheapest      = cs.spellid;
+			}
+		}
+		rez_spell = cheapest;
+	}
+
+	if (!rez_spell) {
+		return false;
+	}
+
+	// Mana check: if we can't afford the cheapest rez, sit and recover
+	int32 spell_mana_cost = spells[rez_spell].mana;
+	if (GetMana() < spell_mana_cost) {
+		// Announce once and sit to meditate
+		if (!m_rez_meditation_announced) {
+			m_rez_meditation_announced = true;
+			CompanionGroupSay(this, "%s", GetRezMeditationLine(GetClass()));
+			Sit();
+		}
+		return false;
+	}
+
+	// We have enough mana — stand if we were sitting to meditate
+	if (m_rez_meditation_announced) {
+		m_rez_meditation_announced = false;
+		Stand();
+	}
+
+	// Cast on the corpse
+	bool cast_ok = AIDoSpellCast(rez_spell, target_corpse, spell_mana_cost);
+	if (cast_ok) {
+		SetSpellTimeCanCast(rez_spell, spells[rez_spell].recast_time);
+	}
+	return cast_ok;
 }

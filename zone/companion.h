@@ -384,6 +384,27 @@ public:
 	bool CheckForLevelUp();
 	uint32 GetCompanionXP() const { return m_companion_xp; }
 	uint32 GetXPForNextLevel() const;
+	uint32 GetXPForCurrentLevel() const;
+
+	// -------------------------------------------------------
+	// Resurrection System
+	// -------------------------------------------------------
+	// Static entry point called from SpellEffect::Revive when target is a companion corpse.
+	// Loads companion data, spawns the companion at the corpse position with post-rez
+	// stats (low HP, 0 mana, no buffs, partial XP restored), then deletes the corpse.
+	static void ResurrectFromCorpse(Corpse* corpse, uint16 spell_id, Mob* caster);
+
+	// Deducts XPDeathPenaltyPct of current level XP on death.
+	// Called from Death() before NPC::Death(). Records loss in m_xp_lost_on_death.
+	void ApplyDeathXPPenalty();
+
+	// Full rez AI: find a dead group member corpse, select best rez spell,
+	// handle mana/meditation, cast. Returns true if a spell was cast.
+	bool AI_ResurrectDeadGroupMember();
+
+	// Scan corpse_list for dead group member corpses within RezRange.
+	// Returns the highest-priority closest corpse, or nullptr if none.
+	Corpse* FindDeadGroupMemberCorpse();
 
 	// -------------------------------------------------------
 	// History (Task 22)
@@ -477,6 +498,7 @@ protected:
 	Timer m_ping_timer;              // keep-alive: prevents client culling idle entities
 	Timer m_mana_report_timer;       // mana % report via group say while sitting (15s interval)
 	Timer m_sitting_regen_timer;     // 6-second cadence for sitting HP bonus (Issue #1 fix)
+	Timer m_rez_delay_timer;         // post-combat settling before rez attempts
 
 	// Equipment: array of item IDs indexed by EQ::invslot::EQUIPMENT slots
 	uint32 m_equipment[EQ::invslot::EQUIPMENT_COUNT];
@@ -528,6 +550,11 @@ private:
 
 	// XP tracking (Task 19)
 	uint32   m_companion_xp;          // accumulated experience
+	uint32   m_xp_lost_on_death;      // XP deducted by ApplyDeathXPPenalty(); used by ResurrectFromCorpse()
+
+	// Rez AI state
+	bool     m_rez_meditation_announced; // true once meditation message sent; cleared when mana sufficient
+	bool     m_was_engaged;             // previous-tick engagement state for transition detection
 
 	// History tracking (Task 22)
 	uint64      m_total_kills;        // total kills attributed to this companion

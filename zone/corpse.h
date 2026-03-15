@@ -101,7 +101,16 @@ public:
 	bool IsCorpse() const { return true; }
 	bool IsPlayerCorpse() const { return m_is_player_corpse; }
 	bool IsNPCCorpse() const { return !m_is_player_corpse; }
+	bool IsCompanionCorpse() const { return m_companion_id > 0; }
 	bool IsBecomeNPCCorpse() const { return m_become_npc; }
+
+	/* Companion Corpse Metadata — set after corpse creation in attack.cpp */
+	void SetCompanionData(uint32 companion_id, uint32 owner_id);
+	uint32 GetCompanionID() const { return m_companion_id; }
+	uint32 GetCompanionOwnerID() const { return m_companion_owner_id; }
+
+	/* Clears all loot from this corpse (used for companion corpses which have no loot) */
+	void ClearAllLoot();
 	virtual void DepopNPCCorpse();
 	virtual void DepopPlayerCorpse();
 	bool Process();
@@ -252,6 +261,8 @@ protected:
 private:
 	bool                     m_is_player_corpse;
 	bool                     m_is_corpse_changed;
+	uint32                   m_companion_id;        // 0 = not a companion corpse
+	uint32                   m_companion_owner_id;  // owner char ID for companion corpses
 	bool                     m_is_locked;
 	int32                    m_player_kill_item;
 	uint32                   m_corpse_db_id;

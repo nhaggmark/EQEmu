@@ -1247,6 +1247,11 @@ RULE_BOOL(Companions, AlwaysMeditateRegen, true,
 	"BUG-027: When true, companion casters always regenerate mana at meditation rates "
 	"regardless of sitting/standing/combat state. Fun-over-authenticity setting for "
 	"small-group play. Set to false to restore authentic sit-to-meditate behavior.")
+RULE_BOOL(Companions, RezEnabled, true, "Master toggle for companion autonomous resurrection")
+RULE_INT(Companions, RezPostCombatDelayS, 10, "Seconds after combat ends before healer companion attempts resurrection")
+RULE_INT(Companions, RezRange, 200, "Maximum distance in game units to target a corpse for resurrection")
+RULE_INT(Companions, XPDeathPenaltyPct, 10, "Percentage of current level XP lost when a companion dies")
+RULE_BOOL(Companions, RezWaiveReagents, true, "Waive spell reagent requirements for companion rez casters (NPCs never consume reagents anyway — this rule exists as a future-proof toggle)")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

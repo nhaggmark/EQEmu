@@ -208,6 +208,7 @@ public:
 
 	Corpse *GetCorpseByOwner(Client* client);
 	Corpse *GetCorpseByOwnerWithinRange(Client* client, Mob* center, int range);
+	Corpse *GetCompanionCorpseByOwnerWithinRange(uint32 owner_char_id, Mob* center, int range);
 	inline Corpse *GetCorpseByID(uint16 id)
 	{
 		auto it = corpse_list.find(id);

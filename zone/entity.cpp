@@ -2049,6 +2049,26 @@ Corpse *EntityList::GetCorpseByOwnerWithinRange(Client *client, Mob *center, int
 	return nullptr;
 }
 
+Corpse *EntityList::GetCompanionCorpseByOwnerWithinRange(uint32 owner_char_id, Mob *center, int range)
+{
+	for (auto it = corpse_list.begin(); it != corpse_list.end(); ++it) {
+		Corpse* corpse = it->second;
+		if (!corpse->IsCompanionCorpse()) {
+			continue;
+		}
+		if (corpse->IsRezzed()) {
+			continue;
+		}
+		if (corpse->GetCompanionOwnerID() != owner_char_id) {
+			continue;
+		}
+		if (DistanceSquaredNoZ(center->GetPosition(), corpse->GetPosition()) < (float)(range * range)) {
+			return corpse;
+		}
+	}
+	return nullptr;
+}
+
 Corpse *EntityList::GetCorpseByDBID(uint32 dbid)
 {
 	auto it = corpse_list.begin();

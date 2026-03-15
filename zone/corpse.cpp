@@ -124,6 +124,8 @@ Corpse::Corpse(
 	m_is_player_corpse          = false;
 	m_is_locked                 = false;
 	m_being_looted_by_entity_id = 0xFFFFFFFF;
+	m_companion_id              = 0;
+	m_companion_owner_id        = 0;
 	if (item_list) {
 		m_item_list = *item_list;
 		item_list->clear();
@@ -171,6 +173,19 @@ Corpse::Corpse(
 	UpdateActiveLight();
 
 	m_loot_request_type = LootRequestType::Forbidden;
+}
+
+void Corpse::SetCompanionData(uint32 companion_id, uint32 owner_id)
+{
+	m_companion_id       = companion_id;
+	m_companion_owner_id = owner_id;
+}
+
+void Corpse::ClearAllLoot()
+{
+	m_item_list.clear();
+	SetCash(0, 0, 0, 0);
+	m_is_corpse_changed = true;
 }
 
 Corpse::Corpse(Client *c, int32 rez_exp, KilledByTypes in_killed_by) : Mob(
