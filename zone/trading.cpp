@@ -640,7 +640,14 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 
 			handin_npc->CheckHandin(this, handin, {}, items);
 
-			parse->EventNPC(EVENT_TRADE, tradingWith->CastToNPC(), this, "", 0, &item_list);
+			// Companions: fire ONLY the global handler to prevent dual-handler item duplication.
+			// Local per-NPC scripts (from PEQ content) return items because they don't know this
+			// NPC is now a companion. EventNPC() fires both local+global unconditionally (BUG-031).
+			if (tradingWith->IsCompanion()) {
+				parse->EventNPCGlobal(EVENT_TRADE, tradingWith->CastToNPC(), this, "", 0, &item_list);
+			} else {
+				parse->EventNPC(EVENT_TRADE, tradingWith->CastToNPC(), this, "", 0, &item_list);
+			}
 			LogNpcHandinDetail("EVENT_TRADE triggered for NPC [{}]", tradingWith->GetNPCTypeID());
 		}
 

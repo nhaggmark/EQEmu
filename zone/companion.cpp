@@ -139,6 +139,12 @@ Companion::Companion(const NPCType* d, float x, float y, float z, float heading,
 		SetSpecialAbility(SpecialAbility::FleeingImmunity, 1);
 	}
 
+	// Allow beneficial spells (heals, buffs, haste, etc.) to land on companions.
+	// Without this flag, IsBeneficialAllowed() returns false for Client→Companion,
+	// causing "The spell did not take hold" for all beneficial spells (BUG-029).
+	// Matches the pattern used for client-owned temp pets (npc.cpp:2204).
+	SetAllowBeneficial(true);
+
 	// Determine combat role from class for positioning logic
 	m_combat_role = DetermineRoleFromClass(GetClass());
 

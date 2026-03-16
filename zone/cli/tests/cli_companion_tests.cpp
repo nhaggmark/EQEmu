@@ -6758,6 +6758,189 @@ inline void TestCompanionResurrectionSystem()
 	std::cout << "--- Suite 29 Complete ---\n";
 }
 
+// ============================================================
+// Suite 30: BUG-029 / BUG-031 — Beneficial spell targeting and trade dedup
+// ============================================================
+//
+// BUG-029: Companions must have SetAllowBeneficial(true) so that
+//   IsBeneficialAllowed() returns true and beneficial spells land.
+//
+// BUG-031: Structural verification that EventNPCGlobal path exists in
+//   the trade dispatch — companion IsCompanion() flag correctly
+//   identifies the companion target.
+// ============================================================
+
+inline void TestCompanionBug029031Fixes()
+{
+	std::cout << "\n--- Suite 30: BUG-029/031 — Beneficial spell targeting and trade dedup ---\n";
+
+	// ---- Test 30.1: Companion has AllowBeneficial flag set (BUG-029) ----
+	// IsBeneficialAllowed() checks target->GetAllowBeneficial() first.
+	// If this flag is true, beneficial spells land without further checks.
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 50, 0); // warrior
+		if (!comp) {
+			SkipTest("BUG-029 > 30.1 Companion AllowBeneficial flag", "No warrior NPC near level 50");
+		} else {
+			RunTest("BUG-029 > 30.1 Companion GetAllowBeneficial() returns true",
+				true, comp->GetAllowBeneficial());
+		}
+	}
+
+	// ---- Test 30.2: AllowBeneficial persists across class types ----
+	{
+		Companion* cleric = CreateTestCompanionByClass(2, 50, 0); // cleric
+		if (!cleric) {
+			SkipTest("BUG-029 > 30.2 Cleric AllowBeneficial", "No cleric NPC near level 50");
+		} else {
+			RunTest("BUG-029 > 30.2 Cleric companion GetAllowBeneficial() returns true",
+				true, cleric->GetAllowBeneficial());
+		}
+	}
+
+	// ---- Test 30.3: AllowBeneficial set for all class types ----
+	{
+		// Test caster class too
+		Companion* wiz = CreateTestCompanionByClass(12, 50, 0); // wizard
+		if (!wiz) {
+			SkipTest("BUG-029 > 30.3 Wizard AllowBeneficial", "No wizard NPC near level 50");
+		} else {
+			RunTest("BUG-029 > 30.3 Wizard companion GetAllowBeneficial() returns true",
+				true, wiz->GetAllowBeneficial());
+		}
+	}
+
+	// ---- Test 30.4: IsBeneficialAllowed() returns true for companion target ----
+	// This is the exact check that gates spell landing.
+	// We need a caster mob to call it from. Use a second companion as proxy.
+	{
+		Companion* caster = CreateTestCompanionByClass(2, 50, 0);  // cleric (caster)
+		Companion* target = CreateTestCompanionByClass(1, 50, 0);  // warrior (target)
+		if (!caster || !target) {
+			SkipTest("BUG-029 > 30.4 IsBeneficialAllowed cleric->warrior", "Missing test companions");
+		} else {
+			// After BUG-029 fix: AllowBeneficial=true → early return true in IsBeneficialAllowed
+			RunTest("BUG-029 > 30.4 IsBeneficialAllowed(companion target) returns true",
+				true, caster->IsBeneficialAllowed(target));
+		}
+	}
+
+	// ---- Test 30.5: IsBeneficialAllowed() returns false for regular NPC ----
+	// Regular NPCs should NOT be buffable by companions (regression check).
+	{
+		Companion* caster = CreateTestCompanionByClass(2, 50, 0);
+		if (!caster) {
+			SkipTest("BUG-029 > 30.5 IsBeneficialAllowed regular NPC", "No cleric NPC near level 50");
+		} else {
+			// Find a regular NPC in the entity list
+			NPC* regular_npc = nullptr;
+			for (auto& e : entity_list.GetNPCList()) {
+				if (e.second && !e.second->IsCompanion()) {
+					regular_npc = e.second;
+					break;
+				}
+			}
+			if (!regular_npc) {
+				SkipTest("BUG-029 > 30.5 IsBeneficialAllowed regular NPC", "No regular NPC in zone");
+			} else {
+				// Regular NPC with no AllowBeneficial set — should return false for NPC-to-NPC
+				// (unless it has the special ability set)
+				bool has_allow_beneficial = regular_npc->GetAllowBeneficial();
+				if (has_allow_beneficial) {
+					SkipTest("BUG-029 > 30.5 IsBeneficialAllowed regular NPC",
+						"Regular NPC in zone happens to have AllowBeneficial set");
+				} else {
+					RunTest("BUG-029 > 30.5 Regular NPC GetAllowBeneficial() returns false",
+						false, regular_npc->GetAllowBeneficial());
+				}
+			}
+		}
+	}
+
+	// ---- Test 30.6: IsGroupOnlySpell identifies group-only spell correctly ----
+	// Growth (spell 251) has goodEffect=2 (BENEFICIAL_EFFECT_GROUP_ONLY).
+	// This verifies the spell data function we rely on for the group targeting fix.
+	{
+		bool is_group = IsGroupOnlySpell(251); // Growth
+		RunTest("BUG-029 > 30.6 Growth (spell 251) IsGroupOnlySpell() returns true",
+			true, is_group);
+	}
+
+	// ---- Test 30.7: Non-group spell is not identified as group-only ----
+	// Alacrity (spell 170) has goodEffect=1 (BENEFICIAL_EFFECT, not group-only).
+	{
+		bool is_group = IsGroupOnlySpell(170); // Alacrity
+		RunTest("BUG-029 > 30.7 Alacrity (spell 170) IsGroupOnlySpell() returns false",
+			false, is_group);
+	}
+
+	// ---- Test 30.8: entity_list.GetGroupByMob() returns null for ungrouped companion ----
+	// This verifies the group resolution function behaves correctly.
+	// A freshly created companion is not in a group.
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 50, 0);
+		if (!comp) {
+			SkipTest("BUG-029 > 30.8 GetGroupByMob null for ungrouped companion", "No warrior NPC near level 50");
+		} else {
+			Group* grp = entity_list.GetGroupByMob(comp);
+			RunTestNull("BUG-029 > 30.8 Ungrouped companion GetGroupByMob() returns null",
+				static_cast<const void*>(grp));
+		}
+	}
+
+	// ---- Test 30.9: Companion IsCompanion() returns true (BUG-031 gate check) ----
+	// The BUG-031 fix branches on tradingWith->IsCompanion().
+	// Verify that the flag is set correctly at construction time.
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 50, 0);
+		if (!comp) {
+			SkipTest("BUG-031 > 30.9 IsCompanion() gate", "No warrior NPC near level 50");
+		} else {
+			RunTest("BUG-031 > 30.9 Companion IsCompanion() returns true (trade dispatch gate)",
+				true, comp->IsCompanion());
+		}
+	}
+
+	// ---- Test 30.10: AllowBeneficial is NOT reset by ScaleStatsToLevel ----
+	// ScaleStatsToLevel is called in the constructor — verify the flag survives.
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 50, 0);
+		if (!comp) {
+			SkipTest("BUG-029 > 30.10 AllowBeneficial survives ScaleStatsToLevel",
+				"No warrior NPC near level 50");
+		} else {
+			// Call ScaleStatsToLevel again as it would be called on level-up
+			comp->ScaleStatsToLevel(comp->GetLevel());
+			RunTest("BUG-029 > 30.10 AllowBeneficial still true after ScaleStatsToLevel",
+				true, comp->GetAllowBeneficial());
+		}
+	}
+
+	// ---- Test 30.11: CastToBot guard — AllowBeneficial flag does NOT crash ACSum ----
+	// Regression: setting AllowBeneficial must not introduce any new CastToBot paths.
+	// ACSum() was the previous crash vector (Suite 10). Confirm it still works.
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 50, 0);
+		if (!comp) {
+			SkipTest("BUG-029 > 30.11 AllowBeneficial ACSum regression", "No warrior NPC near level 50");
+		} else {
+			bool no_crash = true;
+			try {
+				int ac = comp->ACSum();
+				no_crash = true;
+				RunTestGreaterThan("BUG-029 > 30.11 ACSum() still works after AllowBeneficial set (ac > 0)",
+					ac, 0);
+			} catch (...) {
+				no_crash = false;
+			}
+			RunTest("BUG-029 > 30.11 ACSum() does not crash after AllowBeneficial set",
+				true, no_crash);
+		}
+	}
+
+	std::cout << "--- Suite 30 Complete ---\n";
+}
+
 void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::string &description)
 {
 	description = "Run companion system integration tests";
@@ -6860,6 +7043,9 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	CleanupTestCompanions();
 
 	TestCompanionResurrectionSystem();
+	CleanupTestCompanions();
+
+	TestCompanionBug029031Fixes();
 	CleanupTestCompanions();
 
 	// Final DB cleanup

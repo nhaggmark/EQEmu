@@ -200,6 +200,19 @@ public:
 
 	void LoadPerlEventExportSettings(PerlEventExportSettings* s);
 
+	// Fire only the global NPC quest handler, skipping any per-NPC local script.
+	// Used for companion trades (BUG-031) to prevent dual-handler item duplication:
+	// local PEQ per-NPC scripts return items while the global companion handler equips
+	// them, producing duplicates. Companion trade logic lives entirely in global_npc.lua.
+	int EventNPCGlobal(
+		QuestEventID event_id,
+		NPC* npc,
+		Mob* init,
+		std::string data,
+		uint32 extra_data,
+		std::vector<std::any>* extra_pointers = nullptr
+	);
+
 private:
 	bool HasQuestSubLocal(uint32 npc_id, QuestEventID event_id);
 	bool HasQuestSubGlobal(QuestEventID event_id);
@@ -218,15 +231,6 @@ private:
 	bool ZoneHasQuestSubGlobal(QuestEventID event_id);
 
 	int EventNPCLocal(
-		QuestEventID event_id,
-		NPC* npc,
-		Mob* init,
-		std::string data,
-		uint32 extra_data,
-		std::vector<std::any>* extra_pointers
-	);
-
-	int EventNPCGlobal(
 		QuestEventID event_id,
 		NPC* npc,
 		Mob* init,

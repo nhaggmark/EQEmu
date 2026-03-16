@@ -4214,6 +4214,10 @@ bool Mob::SpellOnTarget(
 						}
 					}
 
+				} else if (!spelltar->IsClient()) {
+					// Resolve group for NPC group members (companions, mercs, etc.) so that
+					// group-only spells (e.g. Alacrity) recognize them as valid targets (BUG-029).
+					pBasicGroupTarget = entity_list.GetGroupByMob(spelltar);
 				}
 
 				if (
