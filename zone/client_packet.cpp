@@ -11134,6 +11134,15 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 	Mob* mypet = GetPet();
 	Mob *target = entity_list.GetMob(pet->target);
 
+	// BUG-030 diagnostic: log pet commands when the pet is charmed so we can confirm
+	// commands reach the server and identify which ones the client sends correctly.
+	if (mypet && mypet->GetPetType() == PetType::Charmed) {
+		LogInfo(
+			"BUG-030 diag: OP_PetCommands received for charmed pet [{}] (entity [{}]), command [{}], target entity [{}]",
+			mypet->GetName(), mypet->GetID(), pet->command, pet->target
+		);
+	}
+
 	if (!mypet || pet->command == PET_LEADER) {
 		if (pet->command == PET_LEADER) {
 			// we either send the ID of an NPC we're interested in or no ID for our own pet
