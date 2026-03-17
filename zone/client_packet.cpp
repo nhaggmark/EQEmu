@@ -11316,12 +11316,14 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 		break;
 	}
 	case PET_GETLOST: {
-		if (mypet->Charmed())
-			break;
+		// BUG-033: The original code had `if (mypet->Charmed()) break;` here which
+		// prevented the charm-break path from ever executing. Charmed() and
+		// (GetPetType() == petCharmed) both check type_of_pet == PetType::Charmed,
+		// so the guard was an unconditional block for charmed pets. Fixed by
+		// removing the guard and relying on the petCharmed type check below.
 		if (mypet->GetPetType() == petCharmed || !mypet->IsNPC()) {
-			// eqlive ignores this command
-			// we could just remove the charm
-			// and continue
+			// For charmed pets: break the charm instead of dismissing.
+			// For non-NPC pets (e.g. animation): no action.
 			mypet->BuffFadeByEffect(SpellEffect::Charm);
 			break;
 		}
