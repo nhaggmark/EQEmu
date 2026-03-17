@@ -1412,14 +1412,18 @@ int64 Companion::CalcManaRegen()
 		return static_cast<int64>(regen);
 	}
 
+	int32 base_regen = regen;
+	uint16 meditate  = 0;
+
 	// Non-melee casters use the meditate formula when sitting, or always when AlwaysMeditateRegen is on.
 	// BUG-027: AlwaysMeditateRegen (default true) bypasses the sitting requirement for small-group
 	// playability — companions are perpetually mana-starved otherwise. Set rule to false to restore
 	// authentic sit-to-meditate behavior.
 	if (RuleB(Companions, AlwaysMeditateRegen) || IsSitting()) {
 		if (GetArchetype() != Archetype::Melee) {
-			uint16 meditate = GetSkill(EQ::skills::SkillMeditate);
+			meditate = GetSkill(EQ::skills::SkillMeditate);
 			regen = (((meditate / 10) + (level - (level / 4))) / 4) + 4;
+			base_regen = regen;
 		}
 	}
 
@@ -1428,6 +1432,23 @@ int64 Companion::CalcManaRegen()
 	// Apply global character regen multiplier then companion-specific multiplier
 	regen = (regen * RuleI(Character, ManaRegenMultiplier)) / 100;
 	regen = (regen * RuleI(Companions, CompanionManaRegenMult)) / 100;
+
+	// BUG-034 diagnostic: log mana regen components so we can compare to player values.
+	// Fires on the first call and every 300th call thereafter (roughly every 30 minutes).
+	m_mana_regen_log_counter++;
+	if (m_mana_regen_log_counter == 1 || (m_mana_regen_log_counter % 300) == 0) {
+		LogInfo(
+			"Companion::CalcManaRegen [{}] cls={} lvl={} meditate={} "
+			"base_regen={} spell_bonus={} item_bonus={} aa_bonus={} "
+			"final_regen={} (CharMult={} CompMult={})",
+			GetName(), cls, level, meditate,
+			base_regen,
+			spellbonuses.ManaRegen, itembonuses.ManaRegen, aabonuses.ManaRegen,
+			regen,
+			RuleI(Character, ManaRegenMultiplier),
+			RuleI(Companions, CompanionManaRegenMult)
+		);
+	}
 
 	return static_cast<int64>(regen);
 }
@@ -2322,13 +2343,26 @@ bool Companion::Spawn(Client* owner)
 	// and casts spells.  LoadCompanionSpells() is called inside AI_Start().
 	AI_Start();
 
-	// Strip problematic special abilities inherited from the source NPC.
+	// Strip ALL immunity-related special abilities inherited from the source NPC.
 	// ProcessSpecialAbilities() runs inside NPC::AI_Start() and re-applies
 	// whatever is in NPCTypedata->special_abilities.  We strip after AI_Start()
 	// so companions are never immune to melee/magic, and are never invulnerable,
 	// regardless of what the source NPC's special_abilities field contains.
-	SetSpecialAbility(SpecialAbility::MeleeImmunity, 0);
-	SetSpecialAbility(SpecialAbility::MagicImmunity, 0);
+	//
+	// BUG-032: The original code only stripped MeleeImmunity (19) and
+	// MagicImmunity (20). Boss NPCs can also have MeleeImmunityExceptBane (22),
+	// MeleeImmunityExceptMagical (23), HarmFromClientImmunity (35),
+	// RangedAttackImmunity (46), ClientDamageImmunity (47), or NPCDamageImmunity
+	// (48). Any of these causes GetWeaponDamage() to return 0, which produces
+	// DMG_INVULNERABLE and prevents damage shields from firing.
+	SetSpecialAbility(SpecialAbility::MeleeImmunity, 0);           // 19
+	SetSpecialAbility(SpecialAbility::MagicImmunity, 0);           // 20
+	SetSpecialAbility(SpecialAbility::MeleeImmunityExceptBane, 0); // 22
+	SetSpecialAbility(SpecialAbility::MeleeImmunityExceptMagical, 0); // 23
+	SetSpecialAbility(SpecialAbility::HarmFromClientImmunity, 0);  // 35
+	SetSpecialAbility(SpecialAbility::RangedAttackImmunity, 0);    // 46
+	SetSpecialAbility(SpecialAbility::ClientDamageImmunity, 0);    // 47
+	SetSpecialAbility(SpecialAbility::NPCDamageImmunity, 0);       // 48
 	SetInvul(false);
 
 	// Apply flee immunity based on the rule. Using FleeingImmunity (ability 21)

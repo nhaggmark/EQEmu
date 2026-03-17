@@ -565,4 +565,7 @@ private:
 
 	// Replacement NPC spawn delay timer
 	Timer    m_replacement_spawn_timer;
+
+	// BUG-034 diagnostic: tracks CalcManaRegen() call count for periodic logging
+	uint32   m_mana_regen_log_counter = 0;
 };
