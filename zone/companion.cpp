@@ -712,6 +712,89 @@ void Companion::Damage(Mob* from, int64 damage, uint16 spell_id,
 	NPC::Damage(from, damage, spell_id, attack_skill, avoidable, buffslot, iBuffTic, special);
 }
 
+// ============================================================
+// BUG-035: IsFriendlyTarget — centralized friendly-pet check
+// ============================================================
+
+bool Companion::IsFriendlyTarget(Mob* target) const
+{
+	if (!target) {
+		return false;
+	}
+	if (target == this) {
+		return true;
+	}
+
+	Client* owner = GetCompanionOwner();
+
+	// Direct checks: is target the owner?
+	if (owner && target == owner) {
+		return true;
+	}
+
+	// Is target another companion with the same owner?
+	if (target->IsCompanion()) {
+		const Companion* other_comp = static_cast<const Companion*>(target->CastToNPC());
+		if (other_comp->GetOwnerCharacterID() == m_owner_char_id) {
+			return true;
+		}
+	}
+
+	// Is target a group member?
+	Group* grp = const_cast<Companion*>(this)->GetGroup();
+	if (grp && grp->IsGroupMember(target)) {
+		return true;
+	}
+
+	// Pet ownership: is target a pet whose owner (direct or ultimate) is friendly?
+	Mob* direct_owner = target->GetOwner();
+	if (direct_owner) {
+		// Direct owner is the companion's owner?
+		if (owner && direct_owner == owner) {
+			return true;
+		}
+		// Direct owner is a companion with the same owner_char_id?
+		if (direct_owner->IsCompanion()) {
+			const Companion* owner_comp = static_cast<const Companion*>(direct_owner->CastToNPC());
+			if (owner_comp->GetOwnerCharacterID() == m_owner_char_id) {
+				return true;
+			}
+		}
+		// Direct owner is a group member?
+		if (grp && grp->IsGroupMember(direct_owner)) {
+			return true;
+		}
+
+		// Chase transitive ownership (swarm pets / pet-of-pet chains)
+		Mob* ultimate = target->GetUltimateOwner();
+		if (ultimate && ultimate != target && ultimate != direct_owner) {
+			if (owner && ultimate == owner) {
+				return true;
+			}
+			if (ultimate->IsCompanion()) {
+				const Companion* ult_comp = static_cast<const Companion*>(ultimate->CastToNPC());
+				if (ult_comp->GetOwnerCharacterID() == m_owner_char_id) {
+					return true;
+				}
+			}
+			if (grp && grp->IsGroupMember(ultimate)) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+// BUG-035: IsAttackAllowed override — block attacks on friendly pets (Layer 2)
+bool Companion::IsAttackAllowed(Mob* target, bool isSpellAttack)
+{
+	if (IsFriendlyTarget(target)) {
+		return false;
+	}
+	return Mob::IsAttackAllowed(target, isSpellAttack);
+}
+
 bool Companion::Attack(Mob* other, int Hand, bool FromRiposte, bool IsStrikethrough,
                        bool IsFromSpell, ExtraAttackOptions* opts)
 {
@@ -719,23 +802,13 @@ bool Companion::Attack(Mob* other, int Hand, bool FromRiposte, bool IsStrikethro
 		return false;
 	}
 
-	// Hard safety net: companions must never strike their owner or any member of
-	// their group regardless of how the target ended up on the hate list.
-	Client* atk_owner = GetCompanionOwner();
-	if (atk_owner) {
-		if (other == atk_owner) {
-			// Target is the owner — scrub them from the hate list and abort
-			RemoveFromHateList(other);
-			SetTarget(nullptr);
-			return false;
-		}
-		Group* atk_grp = GetGroup();
-		if (atk_grp && atk_grp->IsGroupMember(other)) {
-			// Target is a group member — scrub from hate list and abort
-			RemoveFromHateList(other);
-			SetTarget(nullptr);
-			return false;
-		}
+	// Hard safety net (Layer 3, BUG-035): companions must never strike any
+	// friendly entity — owner, group members, companions, or their pets.
+	// IsFriendlyTarget() is a superset of the previous manual owner/group checks.
+	if (IsFriendlyTarget(other)) {
+		RemoveFromHateList(other);
+		SetTarget(nullptr);
+		return false;
 	}
 
 	// -------------------------------------------------------
@@ -1916,9 +1989,10 @@ bool Companion::Process()
 	if (owner && m_current_stance == COMPANION_STANCE_BALANCED) {
 		Group* grp = GetGroup();
 		if (grp && !IsEngaged()) {
-			// Scan nearby NPCs and engage any that are attacking a group member
+			// Scan nearby NPCs and engage any that are attacking a group member.
+			// BUG-035 (Layer 1): skip friendly pets before they reach the hate list.
 			for (auto& [id, nearby] : GetCloseMobList(200.0f)) {
-				if (!nearby || !nearby->IsNPC() || nearby->IsCompanion()) {
+				if (!nearby || !nearby->IsNPC() || nearby->IsCompanion() || IsFriendlyTarget(nearby)) {
 					continue;
 				}
 				for (int i = 0; i < MAX_GROUP_MEMBERS; i++) {
@@ -1946,7 +2020,8 @@ bool Companion::Process()
 		float closest_dist_sq = scan_range * scan_range;
 
 		for (auto& [id, nearby] : GetCloseMobList(scan_range)) {
-			if (!nearby || !nearby->IsNPC() || nearby->IsCompanion()) {
+			// BUG-035 (Layer 1): skip friendly pets before they reach the hate list.
+			if (!nearby || !nearby->IsNPC() || nearby->IsCompanion() || IsFriendlyTarget(nearby)) {
 				continue;
 			}
 			if (!IsAttackAllowed(nearby)) {
@@ -1975,23 +2050,11 @@ bool Companion::Process()
 	if (owner && m_current_stance == COMPANION_STANCE_BALANCED && !IsEngaged()) {
 		if (owner->IsClient() && owner->CastToClient()->AutoAttackEnabled()) {
 			Mob* owner_target = owner->GetTarget();
-			if (owner_target && IsAttackAllowed(owner_target)) {
-				bool target_is_safe = false;
-				if (owner_target == owner) {
-					target_is_safe = true;
-				} else if (owner_target->IsCompanion() &&
-				           static_cast<Companion*>(owner_target->CastToNPC())->GetOwnerCharacterID() == m_owner_char_id) {
-					target_is_safe = true;
-				} else {
-					Group* grp = GetGroup();
-					if (grp && grp->IsGroupMember(owner_target)) {
-						target_is_safe = true;
-					}
-				}
-				if (!target_is_safe) {
-					AddToHateList(owner_target, 1);
-					SetTarget(owner_target);
-				}
+			// BUG-035 (Layer 1): IsFriendlyTarget() replaces the verbose manual
+			// owner/companion/group member check and also covers pets of those entities.
+			if (owner_target && !IsFriendlyTarget(owner_target) && IsAttackAllowed(owner_target)) {
+				AddToHateList(owner_target, 1);
+				SetTarget(owner_target);
 			}
 		}
 	}
@@ -2000,22 +2063,9 @@ bool Companion::Process()
 	if (owner && m_current_stance == COMPANION_STANCE_AGGRESSIVE) {
 		Mob* owner_target = owner->GetTarget();
 		if (owner_target) {
-			// Safety: companions must never assist against the owner, another
-			// companion belonging to the same owner, or any group member.
-			bool target_is_safe = false;
-			if (owner_target == owner) {
-				target_is_safe = true;
-			} else if (owner_target->IsCompanion() &&
-			           static_cast<Companion*>(owner_target->CastToNPC())->GetOwnerCharacterID() == m_owner_char_id) {
-				target_is_safe = true;
-			} else {
-				Group* grp = GetGroup();
-				if (grp && grp->IsGroupMember(owner_target)) {
-					target_is_safe = true;
-				}
-			}
-
-			if (!target_is_safe && IsAttackAllowed(owner_target)) {
+			// BUG-035 (Layer 1): IsFriendlyTarget() replaces the verbose manual
+			// owner/companion/group member check and also covers pets of those entities.
+			if (!IsFriendlyTarget(owner_target) && IsAttackAllowed(owner_target)) {
 				if (!IsEngaged() || GetTarget() == nullptr) {
 					AddToHateList(owner_target, 1);
 					SetTarget(owner_target);

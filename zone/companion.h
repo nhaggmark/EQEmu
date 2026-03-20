@@ -119,6 +119,21 @@ public:
 	virtual void SetAttackTimer() override;
 
 	// -------------------------------------------------------
+	// BUG-035: Friendly pet targeting prevention
+	// -------------------------------------------------------
+	// Returns true if this companion should treat `target` as friendly and
+	// never attack it. Checks: owner, companions with same owner_char_id,
+	// group members, and any pet whose owner (direct or transitive via
+	// GetUltimateOwner) is in any of those categories.
+	// Evaluates live ownership — charm-break clears ownerid so the formerly-
+	// charmed NPC correctly becomes a valid target after charm breaks.
+	bool IsFriendlyTarget(Mob* target) const;
+
+	// IsAttackAllowed override: blocks attacks on any entity that IsFriendlyTarget()
+	// identifies as friendly, then delegates to Mob::IsAttackAllowed().
+	virtual bool IsAttackAllowed(Mob* target, bool isSpellAttack = false) override;
+
+	// -------------------------------------------------------
 	// Stat overrides — survivability path (Phase 3)
 	// -------------------------------------------------------
 	// CalcMaxHP adds STA-to-HP conversion on top of the NPC base calculation.

@@ -61,6 +61,7 @@
 //  31. BUG-032: Immunity special abilities stripped in Spawn()
 //  32. BUG-033: Charm Go Away structural verification (PET_GETLOST logic)
 //  33. BUG-034: SkillMeditate initialized for caster companions
+//  34. BUG-035: Companions don't attack friendly pets (IsFriendlyTarget)
 // ============================================================
 
 #include "zone/zone_cli.h"
@@ -7214,6 +7215,343 @@ inline void TestCompanionBug034ManaRegenMeditate()
 	std::cout << "--- Suite 33 Complete ---\n";
 }
 
+// ============================================================
+// Suite 34: BUG-035 — Companions Don't Attack Friendly Pets
+// ============================================================
+//
+// BUG-035: Companions attack charmed pets, summoned pets, and pets belonging
+// to other companions. Root cause: assist logic has no pet-ownership check.
+//
+// Fix: Defense-in-depth with IsFriendlyTarget() helper used in three layers:
+//   Layer 1: Assist scan filters (BALANCED and AGGRESSIVE)
+//   Layer 2: IsAttackAllowed() override
+//   Layer 3: Attack() safety net
+//
+// Test strategy: since we have no real Client in this test environment,
+// we simulate pet ownership using SetOwnerID() + SetPetID() on NPCs, and
+// verify IsFriendlyTarget() / IsAttackAllowed() return the correct values.
+// The Attack() safety net is verified by checking that a companion with a
+// "friendly pet" on its hate list clears it on the next Attack() call.
+// ============================================================
+
+inline void TestCompanionBug035FriendlyPets()
+{
+	std::cout << "\n--- Suite 34: BUG-035 — Companions Don't Attack Friendly Pets ---\n";
+
+	// Create two companions with owner_char_id = 999 (test owner)
+	const uint32 TEST_OWNER_ID = 999;
+
+	uint32 war_id = FindNPCTypeIDForClassLevel(Class::Warrior, 30, 50);
+	uint32 nec_id = FindNPCTypeIDForClassLevel(Class::Necromancer, 30, 50);
+	if (war_id == 0) { war_id = FindNPCTypeIDForClassLevel(Class::Monk, 30, 50); }
+	if (nec_id == 0) { nec_id = FindNPCTypeIDForClassLevel(Class::Enchanter, 30, 50); }
+
+	if (war_id == 0 || nec_id == 0) {
+		SkipTest("BUG-035 > 34.x", "Required NPC classes not found in DB");
+		std::cout << "--- Suite 34 Complete ---\n";
+		return;
+	}
+
+	Companion* warrior = CreateTestCompanion(war_id, TEST_OWNER_ID);
+	Companion* necro   = CreateTestCompanion(nec_id, TEST_OWNER_ID);
+
+	if (!warrior || !necro) {
+		SkipTest("BUG-035 > 34.x", "Failed to create test companions");
+		std::cout << "--- Suite 34 Complete ---\n";
+		return;
+	}
+
+	// Also create a companion with a DIFFERENT owner (owner_id = 888)
+	const uint32 OTHER_OWNER_ID = 888;
+	Companion* other_companion = CreateTestCompanion(war_id, OTHER_OWNER_ID);
+	if (!other_companion) {
+		SkipTest("BUG-035 > 34.x", "Failed to create other_companion");
+		std::cout << "--- Suite 34 Complete ---\n";
+		return;
+	}
+
+	// ============================================================
+	// IsFriendlyTarget() unit tests
+	// ============================================================
+
+	// Test 34.1: nullptr target — must return false (no crash)
+	RunTest("BUG-035 > 34.1 IsFriendlyTarget(nullptr) == false",
+		false, warrior->IsFriendlyTarget(nullptr));
+
+	// Test 34.2: Self — companion identifies itself as friendly
+	RunTest("BUG-035 > 34.2 IsFriendlyTarget(self) == true",
+		true, warrior->IsFriendlyTarget(warrior));
+
+	// Test 34.3: Another companion with same owner_char_id — friendly
+	RunTest("BUG-035 > 34.3 IsFriendlyTarget(same-owner companion) == true",
+		true, warrior->IsFriendlyTarget(necro));
+
+	// Test 34.4: Companion with different owner_char_id — not friendly
+	RunTest("BUG-035 > 34.4 IsFriendlyTarget(different-owner companion) == false",
+		false, warrior->IsFriendlyTarget(other_companion));
+
+	// ============================================================
+	// Create a simulated "pet" NPC: an NPC whose ownerid is set to necro,
+	// and necro's petid is set to the NPC.
+	// This simulates a Necromancer companion's summoned pet.
+	// ============================================================
+	uint32 pet_npc_id = FindNPCTypeIDForClassLevel(Class::Warrior, 1, 20);
+	if (pet_npc_id == 0) {
+		SkipTest("BUG-035 > 34.5-16", "No low-level NPC found in DB for pet simulation");
+		std::cout << "--- Suite 34 Complete ---\n";
+		return;
+	}
+
+	const NPCType* pet_npc_type = content_db.LoadNPCTypesData(pet_npc_id);
+	if (!pet_npc_type) {
+		SkipTest("BUG-035 > 34.5-16", "Failed to load NPC type data for pet simulation");
+		std::cout << "--- Suite 34 Complete ---\n";
+		return;
+	}
+
+	// Necro's pet: owned by the necro companion
+	NPC* necro_pet = new NPC(pet_npc_type, nullptr,
+		glm::vec4(0.0f, 0.0f, 0.0f, 0.0f), GravityBehavior::Water, false);
+	entity_list.AddNPC(necro_pet);
+	// Wire up pet <-> owner relationship
+	necro_pet->SetOwnerID(necro->GetID());
+	necro_pet->SetPetType(PetType::Normal);
+	necro->SetPetID(necro_pet->GetID());
+
+	// An unrelated hostile NPC (no owner, wild mob)
+	NPC* wild_npc = new NPC(pet_npc_type, nullptr,
+		glm::vec4(5.0f, 5.0f, 0.0f, 0.0f), GravityBehavior::Water, false);
+	entity_list.AddNPC(wild_npc);
+	// wild_npc has no ownerid — it's a free mob
+
+	// Test 34.5: Companion's pet — warrior should see necro's pet as friendly
+	RunTest("BUG-035 > 34.5 IsFriendlyTarget(same-owner companion's pet) == true",
+		true, warrior->IsFriendlyTarget(necro_pet));
+
+	// Test 34.6: Wild NPC with no owner — not friendly
+	RunTest("BUG-035 > 34.6 IsFriendlyTarget(wild NPC, no owner) == false",
+		false, warrior->IsFriendlyTarget(wild_npc));
+
+	// Test 34.7: Necro itself sees its own pet as friendly
+	RunTest("BUG-035 > 34.7 IsFriendlyTarget(own pet) == true (necro's own pet)",
+		true, necro->IsFriendlyTarget(necro_pet));
+
+	// Test 34.8: Other companion (different owner) should NOT see necro's pet as friendly
+	RunTest("BUG-035 > 34.8 IsFriendlyTarget(different-owner companion's pet) == false",
+		false, other_companion->IsFriendlyTarget(necro_pet));
+
+	// ============================================================
+	// Simulate a charmed pet: owned by a companion (charm scenario),
+	// but with PetType::Charmed to verify pet type is irrelevant —
+	// only ownership matters.
+	// ============================================================
+
+	// Re-use necro_pet as "charmed pet" by changing its type
+	// (In real gameplay, a charmed NPC gets ownerid=charmer and type=Charmed)
+	necro_pet->SetPetType(PetType::Charmed);
+
+	// Test 34.9: Charmed pet (still owned by necro) — warrior sees as friendly
+	RunTest("BUG-035 > 34.9 IsFriendlyTarget(charmed pet of same-owner companion) == true",
+		true, warrior->IsFriendlyTarget(necro_pet));
+
+	// Test 34.10: Charmed pet NOT friendly to different-owner companion
+	RunTest("BUG-035 > 34.10 IsFriendlyTarget(charmed pet, different owner) == false",
+		false, other_companion->IsFriendlyTarget(necro_pet));
+
+	// ============================================================
+	// Charm break simulation: clear ownerid → pet is no longer friendly
+	// ============================================================
+	// After charm breaks: SetOwnerID(0) is called (spell_effects.cpp:4431)
+	necro_pet->SetOwnerID(0);
+	necro->SetPetID(0);   // necro no longer has a pet
+	// Now necro_pet is a wild NPC again (no owner)
+
+	// Test 34.11: After charm break — IsFriendlyTarget returns false (correct: can attack)
+	RunTest("BUG-035 > 34.11 IsFriendlyTarget after charm break (ownerid=0) == false",
+		false, warrior->IsFriendlyTarget(necro_pet));
+
+	// Test 34.12: Wild NPC with PetType::None — not friendly
+	necro_pet->SetPetType(PetType::None);
+	RunTest("BUG-035 > 34.12 IsFriendlyTarget(PetType::None, no owner) == false",
+		false, warrior->IsFriendlyTarget(necro_pet));
+
+	// ============================================================
+	// IsAttackAllowed() override tests (Layer 2)
+	// ============================================================
+
+	// Restore necro_pet as a companion pet for these tests
+	necro_pet->SetOwnerID(necro->GetID());
+	necro_pet->SetPetType(PetType::Normal);
+	necro->SetPetID(necro_pet->GetID());
+
+	// Test 34.13: IsAttackAllowed returns false for companion's pet
+	RunTest("BUG-035 > 34.13 IsAttackAllowed(same-owner companion's pet) == false",
+		false, warrior->IsAttackAllowed(necro_pet));
+
+	// Test 34.14: IsAttackAllowed returns false for same-owner companion
+	RunTest("BUG-035 > 34.14 IsAttackAllowed(same-owner companion) == false",
+		false, warrior->IsAttackAllowed(necro));
+
+	// Test 34.15: IsAttackAllowed returns true for wild hostile NPC
+	// Note: IsAttackAllowed may also return false for faction reasons against
+	// an NPC with friendly faction. We only verify it doesn't block wild NPCs
+	// via IsFriendlyTarget — we can't guarantee the full result without a real
+	// faction system. We check that IsFriendlyTarget is false for the wild NPC.
+	RunTest("BUG-035 > 34.15 IsFriendlyTarget(wild NPC) == false (pre-condition for attack allowed)",
+		false, warrior->IsFriendlyTarget(wild_npc));
+
+	// Test 34.16: IsAttackAllowed returns false for a different-owner companion? No — different owner is fair game
+	RunTest("BUG-035 > 34.16 IsAttackAllowed(different-owner companion) is NOT blocked by IsFriendlyTarget",
+		false, warrior->IsFriendlyTarget(other_companion));
+
+	// ============================================================
+	// Attack() safety net tests (Layer 3)
+	// ============================================================
+
+	// Test 34.17: Attack() returns false for a friendly pet on the hate list
+	// Put necro_pet on warrior's hate list (simulating the bug scenario),
+	// then call Attack() and verify it returns false and removes from hate list.
+	warrior->AddToHateList(necro_pet, 100);
+	RunTest("BUG-035 > 34.17 Verify necro_pet was added to warrior hate list",
+		true, warrior->IsEngaged());
+
+	bool attack_result = warrior->Attack(necro_pet);
+	RunTest("BUG-035 > 34.18 Attack(friendly pet) returns false (safety net fires)",
+		false, attack_result);
+
+	// Test 34.19: After Attack() rejects, hate list entry is cleared
+	// The safety net calls RemoveFromHateList + SetTarget(nullptr)
+	RunTest("BUG-035 > 34.19 After Attack() rejection, warrior target is nullptr",
+		true, warrior->GetTarget() == nullptr);
+
+	// Test 34.20: Attack() returns false for companion itself (self-guard)
+	// warrior attacking itself — IsFriendlyTarget(self) == true
+	bool self_attack = warrior->Attack(warrior);
+	RunTest("BUG-035 > 34.20 Attack(self) returns false",
+		false, self_attack);
+
+	// Test 34.21: Attack() returns false for same-owner companion (necro)
+	// First add necro to warrior's hate list
+	warrior->AddToHateList(necro, 100);
+	bool necro_attack = warrior->Attack(necro);
+	RunTest("BUG-035 > 34.21 Attack(same-owner companion) returns false",
+		false, necro_attack);
+	RunTest("BUG-035 > 34.22 After Attack(companion) rejection, warrior target is nullptr",
+		true, warrior->GetTarget() == nullptr);
+
+	// ============================================================
+	// Swarm pet / transitive ownership tests (Layer 1 + 2)
+	// ============================================================
+	// Simulate a swarm pet: its owner is necro_pet, which is owned by necro.
+	// warrior should treat swarm_pet as friendly (transitive chain).
+	const NPCType* swarm_type = content_db.LoadNPCTypesData(pet_npc_id);
+	if (swarm_type) {
+		NPC* swarm_pet = new NPC(swarm_type, nullptr,
+			glm::vec4(0.0f, 0.0f, 0.0f, 0.0f), GravityBehavior::Water, false);
+		entity_list.AddNPC(swarm_pet);
+
+		// Wire swarm_pet → necro_pet → necro
+		swarm_pet->SetOwnerID(necro_pet->GetID());
+		swarm_pet->SetPetType(PetType::Normal);
+		necro_pet->SetPetID(swarm_pet->GetID());
+
+		// Test 34.23: Swarm pet of companion's pet — warrior sees as friendly
+		RunTest("BUG-035 > 34.23 IsFriendlyTarget(swarm pet of companion's pet) == true",
+			true, warrior->IsFriendlyTarget(swarm_pet));
+
+		// Test 34.24: IsAttackAllowed returns false for swarm pet
+		RunTest("BUG-035 > 34.24 IsAttackAllowed(swarm pet) == false",
+			false, warrior->IsAttackAllowed(swarm_pet));
+
+		// Clean up swarm pet link
+		necro_pet->SetPetID(0);
+		swarm_pet->Depop();
+		entity_list.MobProcess();
+	} else {
+		SkipTest("BUG-035 > 34.23-24", "Failed to load swarm pet NPC type");
+	}
+
+	// Restore necro's pet link (may have been disturbed by swarm test)
+	necro->SetPetID(necro_pet->GetID());
+
+	// ============================================================
+	// Multi-companion pet isolation: each companion only protects its own owner's pets
+	// ============================================================
+
+	// other_companion (owner_id=888) has its own pet
+	NPC* other_pet = new NPC(pet_npc_type, nullptr,
+		glm::vec4(10.0f, 10.0f, 0.0f, 0.0f), GravityBehavior::Water, false);
+	entity_list.AddNPC(other_pet);
+	other_pet->SetOwnerID(other_companion->GetID());
+	other_pet->SetPetType(PetType::Normal);
+	other_companion->SetPetID(other_pet->GetID());
+
+	// Test 34.25: warrior (owner 999) should NOT treat other_companion's pet (owner 888) as friendly
+	RunTest("BUG-035 > 34.25 IsFriendlyTarget(other-owner companion's pet) == false",
+		false, warrior->IsFriendlyTarget(other_pet));
+
+	// Test 34.26: other_companion (owner 888) sees its own pet as friendly
+	RunTest("BUG-035 > 34.26 other_companion IsFriendlyTarget(own pet) == true",
+		true, other_companion->IsFriendlyTarget(other_pet));
+
+	// Test 34.27: warrior (owner 999) sees necro_pet (owner 999's companion) as friendly
+	RunTest("BUG-035 > 34.27 warrior IsFriendlyTarget(necro companion's pet) == true",
+		true, warrior->IsFriendlyTarget(necro_pet));
+
+	// ============================================================
+	// Charm-break regression: after ownerid cleared, companion IS a valid target
+	// ============================================================
+	// Simulate: necro_pet was charmed, charm breaks (ownerid cleared)
+	necro->SetPetID(0);
+	necro_pet->SetOwnerID(0);
+
+	// Test 34.28: After charm break, warrior CAN attack the formerly-charmed NPC
+	RunTest("BUG-035 > 34.28 IsFriendlyTarget(former pet, ownerid=0) == false (attack allowed)",
+		false, warrior->IsFriendlyTarget(necro_pet));
+
+	// Test 34.29: IsAttackAllowed does NOT block formerly-charmed NPC
+	// (Note: faction system may still block it, but IsFriendlyTarget won't)
+	// We verify IsFriendlyTarget is false, which means Layer 2 won't block it.
+	RunTest("BUG-035 > 34.29 IsFriendlyTarget gating: false for former-charmed NPC (can attack)",
+		false, warrior->IsFriendlyTarget(necro_pet));
+
+	// ============================================================
+	// Verify hostile NPC regression: hostile NPCs still get engaged
+	// ============================================================
+
+	// wild_npc (no owner) — warrior should NOT treat as friendly
+	RunTest("BUG-035 > 34.30 Wild NPC still IsFriendlyTarget == false (no regression)",
+		false, warrior->IsFriendlyTarget(wild_npc));
+
+	// Test 34.31: other_companion (different owner) is not friendly to warrior
+	RunTest("BUG-035 > 34.31 IsFriendlyTarget(different-owner companion) == false (no regression)",
+		false, warrior->IsFriendlyTarget(other_companion));
+
+	// ============================================================
+	// Verify nullptr handling in pet ownership chain
+	// ============================================================
+
+	// Test 34.32: NPC with ownerid set to an entity that does not exist in entity_list
+	// GetOwner() returns nullptr in this case → IsFriendlyTarget must handle gracefully
+	NPC* orphan_pet = new NPC(pet_npc_type, nullptr,
+		glm::vec4(15.0f, 15.0f, 0.0f, 0.0f), GravityBehavior::Water, false);
+	entity_list.AddNPC(orphan_pet);
+	// Set ownerid to a non-existent entity ID (65000 — unlikely to exist)
+	orphan_pet->SetOwnerID(65000);
+	orphan_pet->SetPetType(PetType::Normal);
+
+	RunTest("BUG-035 > 34.32 IsFriendlyTarget(pet with non-existent owner) == false (no crash)",
+		false, warrior->IsFriendlyTarget(orphan_pet));
+
+	orphan_pet->Depop();
+	entity_list.MobProcess();
+
+	// ============================================================
+	// Summary message
+	// ============================================================
+	std::cout << "--- Suite 34 Complete ---\n";
+}
+
 void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::string &description)
 {
 	description = "Run companion system integration tests";
@@ -7328,6 +7666,9 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	CleanupTestCompanions();
 
 	TestCompanionBug034ManaRegenMeditate();
+	CleanupTestCompanions();
+
+	TestCompanionBug035FriendlyPets();
 	CleanupTestCompanions();
 
 	// Final DB cleanup
