@@ -395,7 +395,16 @@ public:
 	// -------------------------------------------------------
 	// XP / Leveling (Task 19)
 	// -------------------------------------------------------
-	void AddExperience(uint32 xp);
+	// Companion::CalculateExp — mirrors Client::CalculateExp minus AA split,
+	// race/class bonuses, and leadership XP. AA-extensibility seam: a future
+	// companion-AA feature will add a `uint32& add_aaxp` out-parameter here
+	// and split the multiplied XP into regular and AA buckets, exactly
+	// paralleling Client::CalculateExp's add_exp / add_aaxp split. The
+	// companion side will then add a Companion::AddAAExperience method and
+	// a Companions:AAExpMultiplier rule. None of that is wired in this
+	// feature — only the structural seam exists here.
+	uint32 CalculateExp(uint32 raw_xp, uint8 conlevel);
+	void AddExperience(uint32 xp, uint8 conlevel = 0xFF);
 	bool CheckForLevelUp();
 	uint32 GetCompanionXP() const { return m_companion_xp; }
 	uint32 GetXPForNextLevel() const;

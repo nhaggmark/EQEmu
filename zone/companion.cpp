@@ -17,6 +17,7 @@
 */
 
 #include "companion.h"
+#include "zone/exp.h"
 
 #include "common/data_bucket.h"
 #include "common/spdat.h"
@@ -3338,9 +3339,62 @@ void Companion::GiveAll(Client* client)
 // XP / Leveling (Task 19)
 // ============================================================
 
-void Companion::AddExperience(uint32 xp)
+uint32 Companion::CalculateExp(uint32 raw_xp, uint8 conlevel)
 {
-	m_companion_xp += xp;
+	// AA-extensibility seam: a future companion-AA feature will add a
+	// `uint32& add_aaxp` out-parameter here and split the multiplied XP
+	// into regular and AA buckets, exactly paralleling Client::CalculateExp's
+	// add_exp / add_aaxp split. The companion side will then add a
+	// Companion::AddAAExperience method and a Companions:AAExpMultiplier rule.
+	// None of that is wired in this feature — only the structural seam exists here.
+
+	float totalmod = 1.0f;
+	float zemmod   = 1.0f;
+
+	if (RuleR(Character, ExpMultiplier) >= 0) {
+		totalmod *= RuleR(Character, ExpMultiplier);
+	}
+
+	if (zone->newzone_data.zone_exp_multiplier >= 0) {
+		zemmod *= zone->newzone_data.zone_exp_multiplier;
+	}
+
+	if (zone->IsHotzone()) {
+		totalmod += RuleR(Zone, HotZoneBonus);
+	}
+
+	uint32 result = static_cast<uint32>(static_cast<float>(raw_xp) * totalmod * zemmod);
+
+	if (RuleB(Character, UseXPConScaling)) {
+		if (conlevel != 0xFF) {
+			result = static_cast<uint32>(static_cast<float>(result) * GetConLevelModifierPercent(conlevel));
+		}
+	}
+
+	if (RuleB(Zone, LevelBasedEXPMods)) {
+		if (zone->level_exp_mod[GetLevel()].ExpMod) {
+			result = static_cast<uint32>(static_cast<float>(result) * zone->level_exp_mod[GetLevel()].ExpMod);
+		}
+	}
+
+	if (RuleR(Character, FinalExpMultiplier) >= 0) {
+		result = static_cast<uint32>(static_cast<float>(result) * RuleR(Character, FinalExpMultiplier));
+	}
+
+	return result;
+}
+
+void Companion::AddExperience(uint32 xp, uint8 conlevel)
+{
+	uint32 multiplied = CalculateExp(xp, conlevel);
+
+	int xp_share_pct = RuleI(Companions, XPSharePct);
+	if (xp_share_pct < 0)   { xp_share_pct = 0; }
+	if (xp_share_pct > 100) { xp_share_pct = 100; }
+
+	uint32 final_xp = static_cast<uint32>(static_cast<uint64>(multiplied) * static_cast<uint64>(xp_share_pct) / 100);
+
+	m_companion_xp += final_xp;
 
 	// Loop to handle cascading level-ups (e.g., cap released when player levels up
 	// and companion had stored XP beyond the old threshold).

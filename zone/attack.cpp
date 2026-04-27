@@ -2789,22 +2789,16 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 						}
 
 						// Solo companion XP: grant XP to companions owned by the killing player.
-						// Con check is per-companion against this NPC's level.
+						// Pass raw final_exp + con_level into AddExperience, which now owns
+						// the full multiplier pipeline (CalculateExp) and XPSharePct post-multiplier.
 						if (RuleB(Companions, XPContribute)) {
-							int xp_share_pct = RuleI(Companions, XPSharePct);
-							if (xp_share_pct < 0)   { xp_share_pct = 0; }
-							if (xp_share_pct > 100) { xp_share_pct = 100; }
-
-							if (xp_share_pct > 0) {
-								auto companions = entity_list.GetCompanionsByOwnerCharacterID(give_exp_client->CharacterID());
-								for (auto comp : companions) {
-									if (!comp) { continue; }
-									const uint8 comp_con = Mob::GetLevelCon(comp->GetLevel(), GetLevel());
-									if (comp_con == ConsiderColor::Gray) { continue; }
-									const uint32 comp_xp = static_cast<uint32>(final_exp * static_cast<uint64>(xp_share_pct) / 100);
-									if (comp_xp > 0) {
-										comp->AddExperience(comp_xp);
-									}
+							auto companions = entity_list.GetCompanionsByOwnerCharacterID(give_exp_client->CharacterID());
+							for (auto comp : companions) {
+								if (!comp) { continue; }
+								const uint8 comp_con = Mob::GetLevelCon(comp->GetLevel(), GetLevel());
+								if (comp_con == ConsiderColor::Gray) { continue; }
+								if (final_exp > 0) {
+									comp->AddExperience(static_cast<uint32>(final_exp), static_cast<uint8>(con_level));
 								}
 							}
 						}

@@ -215,7 +215,7 @@ uint64 Client::GetExperienceForKill(Mob *against)
 	return 0;
 }
 
-float static GetConLevelModifierPercent(uint8 conlevel)
+float GetConLevelModifierPercent(uint8 conlevel)
 {
 	switch (conlevel)
 	{
@@ -1191,27 +1191,20 @@ void Group::SplitExp(ExpSource exp_source, const uint64 exp, Mob* other) {
 	}
 
 	// Task 19: distribute XP to companion group members.
-	// Each companion's share is the same per-member slice the clients receive,
-	// further scaled by the XPSharePct rule (default 50%).
+	// Pass raw member_share + consider_level into AddExperience, which now owns
+	// the full multiplier pipeline (CalculateExp) and XPSharePct post-multiplier.
 	if (RuleB(Companions, XPContribute)) {
-		int xp_share_pct = RuleI(Companions, XPSharePct);
-		if (xp_share_pct < 0)   { xp_share_pct = 0; }
-		if (xp_share_pct > 100) { xp_share_pct = 100; }
+		for (const auto& m : members) {
+			if (m && m->IsCompanion()) {
+				// Gray-con check per companion level against the killed mob
+				const uint8 comp_con = Mob::GetLevelCon(m->GetLevel(), other->GetLevel());
+				if (comp_con == ConsiderColor::Gray) {
+					continue;
+				}
 
-		if (xp_share_pct > 0) {
-			for (const auto& m : members) {
-				if (m && m->IsCompanion()) {
-					// Gray-con check per companion level against the killed mob
-					const uint8 comp_con = Mob::GetLevelCon(m->GetLevel(), other->GetLevel());
-					if (comp_con == ConsiderColor::Gray) {
-						continue;
-					}
-
-					const uint64 member_share = group_experience / member_count;
-					const uint32 companion_xp = static_cast<uint32>(member_share * static_cast<uint64>(xp_share_pct) / 100);
-					if (companion_xp > 0) {
-						m->CastToCompanion()->AddExperience(companion_xp);
-					}
+				const uint64 member_share = group_experience / member_count;
+				if (member_share > 0) {
+					m->CastToCompanion()->AddExperience(static_cast<uint32>(member_share), consider_level);
 				}
 			}
 		}

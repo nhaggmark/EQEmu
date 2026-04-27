@@ -132,6 +132,12 @@ void Lua_Companion::AddExperience(uint32 xp)
 	self->AddExperience(xp);
 }
 
+void Lua_Companion::AddExperience(uint32 xp, int conlevel)
+{
+	Lua_Safe_Call_Void();
+	self->AddExperience(xp, static_cast<uint8>(conlevel));
+}
+
 uint32 Lua_Companion::GetXPForNextLevel()
 {
 	Lua_Safe_Call_Int();
@@ -306,7 +312,8 @@ void Lua_Companion::SetGuardMode(bool enabled)
 luabind::scope lua_register_companion() {
 	return luabind::class_<Lua_Companion, Lua_Mob>("Companion")
 	.def(luabind::constructor<>())
-	.def("AddExperience",          &Lua_Companion::AddExperience)
+	.def("AddExperience", (void(Lua_Companion::*)(uint32))&Lua_Companion::AddExperience)
+	.def("AddExperience", (void(Lua_Companion::*)(uint32,int))&Lua_Companion::AddExperience)
 	.def("Dismiss",                &Lua_Companion::Dismiss)
 	.def("GetCompanionID",         &Lua_Companion::GetCompanionID)
 	.def("GetCompanionType",       &Lua_Companion::GetCompanionType)
