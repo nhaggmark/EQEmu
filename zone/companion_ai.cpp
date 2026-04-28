@@ -1865,12 +1865,20 @@ Corpse* Companion::FindDeadGroupMemberCorpse()
 		return nullptr;
 	}
 
-	// Only search within RezRange
 	int rez_range = RuleI(Companions, RezRange);
 
-	// We look for any companion corpse owned by this owner's character ID
-	// (each player can have one companion; if two companions are dead, we find
-	// the closest one — extension to multi-companion groups can sort by priority later)
+	// Priority 1: the owner's player corpse if in range and not yet rezzed.
+	// Player rez is highest priority — the player cannot keep playing without it.
+	// GetCorpseByOwnerWithinRange compares DistanceSquaredNoZ against the range argument
+	// directly (no squaring inside the function), so pass rez_range*rez_range for a
+	// correct distance check matching GetCompanionCorpseByOwnerWithinRange's convention.
+	Corpse* player_corpse = entity_list.GetCorpseByOwnerWithinRange(
+		owner, this, rez_range * rez_range);
+	if (player_corpse && !player_corpse->IsRezzed()) {
+		return player_corpse;
+	}
+
+	// Priority 2: closest companion corpse owned by this owner.
 	return entity_list.GetCompanionCorpseByOwnerWithinRange(
 		owner->CharacterID(), this, rez_range);
 }

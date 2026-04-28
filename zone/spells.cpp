@@ -2048,13 +2048,17 @@ bool Mob::DetermineSpellTargets(uint16 spell_id, Mob *&spell_target, Mob *&ae_ce
 
 		case ST_Corpse:
 		{
-			if(!spell_target || !spell_target->IsPlayerCorpse())
+			bool is_player_corpse    = spell_target && spell_target->IsCorpse() &&
+			                           spell_target->CastToCorpse()->IsPlayerCorpse();
+			bool is_companion_corpse = spell_target && spell_target->IsCorpse() &&
+			                           spell_target->CastToCorpse()->IsCompanionCorpse();
+			if(!spell_target || (!is_player_corpse && !is_companion_corpse))
 			{
 				LogSpells("Spell [{}] canceled: invalid target (corpse)", spell_id);
 				uint32 message = ONLY_ON_CORPSES;
 				if(!spell_target) message = SPELL_NEED_TAR;
 				else if(!spell_target->IsCorpse()) message = ONLY_ON_CORPSES;
-				else if(!spell_target->IsPlayerCorpse()) message = CORPSE_NOT_VALID;
+				else if(!is_player_corpse && !is_companion_corpse) message = CORPSE_NOT_VALID;
 				MessageString(Chat::Red, message);
 				return false;
 			}
