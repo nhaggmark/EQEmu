@@ -212,16 +212,39 @@ Companion* Companion::CreateFromNPC(Client* owner, NPC* source_npc)
 	// and death. Without matching is_suspended, a dead companion re-recruited before
 	// the despawn timer fires would fall through to the fresh-recruitment path and lose
 	// all equipment. (BUG-012)
+	//
+	// Query on name rather than npc_type_id so re-recruitment works when the NPC spawns
+	// as a different variant of the same mob (e.g. Lydl_the_Great has multiple npc_type_id
+	// entries in the same spawngroup). The name column stores GetCleanName() output written
+	// at Save() time — using GetCleanName() here guarantees a bit-for-bit match regardless
+	// of underscore/digit stripping. ORDER BY prefers higher-level, higher-XP, newest row
+	// in the rare case a player has duplicate stored rows. (BUG-036 V2)
 	auto existing = CompanionDataRepository::GetWhere(
 		database,
 		fmt::format(
-			"owner_id = {} AND npc_type_id = {} AND (is_dismissed = 1 OR is_suspended = 1) LIMIT 1",
+			"owner_id = {} AND name = '{}' AND name != '' "
+			"AND (is_dismissed = 1 OR is_suspended = 1) "
+			"ORDER BY level DESC, experience DESC, id DESC LIMIT 1",
 			owner->CharacterID(),
-			source_npc->GetNPCTypeID()
+			Strings::Escape(source_npc->GetCleanName())
 		)
 	);
 
 	if (!existing.empty()) {
+		// Diagnostic: log when name-match resolved via a different variant than targeted.
+		// This surfaces stale-name cases (admin renamed npc_types after the companion was
+		// recruited). Behavior is unchanged — we always load the stored row by PK.
+		if (existing[0].npc_type_id != source_npc->GetNPCTypeID()) {
+			LogInfo(
+				"Companion::CreateFromNPC: name-match variant mismatch for '{}' "
+				"(targeted npc_type_id={}, stored npc_type_id={}, row id={})",
+				source_npc->GetCleanName(),
+				source_npc->GetNPCTypeID(),
+				existing[0].npc_type_id,
+				existing[0].id
+			);
+		}
+
 		// Re-recruitment: restore saved companion state
 		Companion* companion = new Companion(
 			npc_type_data,
