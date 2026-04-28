@@ -1191,7 +1191,7 @@ RULE_INT(Companions, MinFaction, 3, "Minimum faction level required for recruitm
 RULE_BOOL(Companions, XPContribute, true, "Whether companions count in group XP split calculations")
 RULE_INT(Companions, MercRetentionCheckS, 600, "Seconds between mercenary-type companion retention checks")
 RULE_INT(Companions, ReplacementSpawnDelayS, 30, "Delay in seconds before a replacement NPC spawns at a recruited NPC's vacated spawn point")
-RULE_INT(Companions, XPSharePct, 50, "Percentage of a companion's XP share that actually goes to the companion (remainder to player pool)")
+RULE_INT(Companions, XPSharePct, 100, "Post-multiplier scalar applied to companion XP after the standard multiplier pipeline; 100 = parity with player per-share, 0-100 range")
 RULE_INT(Companions, MaxLevelOffset, 1, "Companions level cap is player_level minus this value (e.g., 1 means companion max is player_level - 1)")
 RULE_REAL(Companions, ReRecruitBonus, 0.10, "Persuasion roll bonus (as a fraction) for re-recruiting a voluntarily dismissed companion")
 RULE_INT(Companions, DismissedRetentionDays, 30, "Days a dismissed companion's data is retained in the database before permanent deletion")

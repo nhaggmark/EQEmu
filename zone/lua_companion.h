@@ -87,6 +87,7 @@ public:
 	// Experience
 	// -------------------------------------------------------
 	void   AddExperience(uint32 xp);
+	void   AddExperience(uint32 xp, int conlevel);
 	uint32 GetXPForNextLevel();
 
 	// -------------------------------------------------------
