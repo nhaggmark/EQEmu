@@ -714,6 +714,24 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 		Group* g = GetGroup();
 		if (g) {
 			g->MemberZoned(this);
+
+			// Fix A (BUG-001 V2): MemberZoned clears members[i] (pointer) but NOT
+			// membername[i] (name string) — that invariant is intentional for living
+			// players who zone out and will return as the same entity.  Dead companions
+			// are different: they come back as a brand-new entity with a new entity ID,
+			// so the name slot MUST be freed.  Without this, GroupCount() still counts
+			// the dead companion's slot (name string is non-empty), and the subsequent
+			// AddMember() on the rezzed entity fails either the capacity check
+			// (GroupCount >= MAX_GROUP_MEMBERS) or the name-collision check
+			// (Strings::EqualFold on the still-present name string) — for ALL group sizes.
+			const char* dead_name = GetCleanName();
+			for (int i = 0; i < MAX_GROUP_MEMBERS; ++i) {
+				if (g->membername[i][0] != '\0' &&
+				    Strings::EqualFold(g->membername[i], dead_name)) {
+					g->membername[i][0] = '\0';
+					break;
+				}
+			}
 		}
 	}
 
@@ -1905,6 +1923,15 @@ bool Companion::Process()
 			"WHERE `id`={} LIMIT 1",
 			m_companion_id);
 		database.QueryDatabase(safety_query);
+	}
+
+	// Fix R4 (BUG-001 V2): skip ALL companion AI for dead entities.  NPC::Process() is
+	// still called so the despawn timer and standard NPC cleanup (p_depop flag) continues
+	// to function.  This prevents dead companions from entering the AI dispatch path in
+	// NPC::Process() → Mob::AI_Process() → AI_IdleCastCheck(), which can trigger rez
+	// attempts, buff casts, or movement on a dead entity.
+	if (GetHP() <= 0) {
+		return NPC::Process();
 	}
 
 	// Check death despawn timer
@@ -3613,84 +3640,111 @@ void Companion::ResurrectFromCorpse(Corpse* corpse, uint16 spell_id, Mob* caster
 		}
 	}
 
-	// DB update: restore XP and clear suspended flag BEFORE spawning new entity.
-	// This is crash-safe: if the server crashes after this UPDATE but before the entity
-	// is created, the companion is marked as active with restored XP — the player can
-	// unsuspend normally. If we crash before the UPDATE, the corpse still exists and
-	// another rez attempt can complete. (Architecture decision #9)
-	comp_data.is_suspended  = 0;
-	comp_data.cur_hp        = 0; // will be set to rez % of max by the new entity
-	comp_data.experience   += xp_restore;
-	CompanionDataRepository::UpdateOne(database, comp_data);
-
 	// Save the corpse position — we need it for spawn location
 	glm::vec4 corpse_pos = corpse->GetPosition();
 
-	// Remove the corpse entity from the zone
-	corpse->DepopNPCCorpse();
+	// Fix B (BUG-001 V2): Route entity creation through Spawn() instead of AddNPC.
+	// The old path called entity_list.AddNPC() which registered the entity in npc_list
+	// and mob_list but NOT companion_list.  This caused:
+	//   - AI, group iteration, and GetCompanionByOwnerCharacterID() to silently skip
+	//     the rezzed entity (it wasn't in companion_list)
+	//   - Name normalization (Spawn():2403-2404) to be skipped → Titanium client
+	//     group-window targeting failure (name mismatch between spawn packet and
+	//     group member name)
+	//   - Immunity strip (Spawn():2432-2440) to be skipped → boss-NPC companions
+	//     retain invulnerability after rez
+	//
+	// The new path mirrors SpawnCompanionsOnZone(): Load() restores DB state first
+	// (stance, equipment refs, XP), then Spawn() normalizes the name, calls
+	// AddCompanion() (correct list), starts AI, strips immunities, and joins the
+	// owner's group.  Load() already calls ScaleStatsToLevel(), LoadEquipment(),
+	// and CalcBonuses() internally — do not call them again.
+	//
+	// Fix C (BUG-001 V2): Atomic rez chain — defer DB UPDATE and DepopNPCCorpse
+	// until AFTER Spawn() + group-join confirm success.  The old ordering wrote
+	// is_suspended=0 and depopped the corpse BEFORE entity creation, leaving a
+	// stuck state (DB alive, no entity, no corpse) if Spawn() or AddMember failed.
+	// The new ordering: Spawn() first, then DB UPDATE + corpse depop.
+	//
+	// Crash-safety is preserved with the new ordering:
+	//   - Crash before Spawn(): corpse intact, DB unchanged, retry via next Cleric tick.
+	//   - Crash after Spawn() but before DB UPDATE: DB still shows is_suspended=1
+	//     (no UPDATE ran), corpse still intact; retry via next Cleric tick.
+	//   - Crash after DB UPDATE but before DepopNPCCorpse: DB shows is_suspended=0,
+	//     entity in zone, corpse still present; !unsuspend can recover if needed.
+	//   All windows are recoverable — better than the old stuck-state.
+	//
+	// corpse->IsRezzed(true) stays early as the concurrent-cast race guard (prevents
+	// a second Cleric from targeting the same corpse while we're spawning).  Reset
+	// to false on Spawn() failure so the corpse becomes rezzable on the next tick.
 
-	// Create the new companion entity at the corpse position
-	Companion* new_comp = new Companion(npc_type_data,
-	                                    corpse_pos.x, corpse_pos.y, corpse_pos.z, corpse_pos.w,
-	                                    owner_char_id, static_cast<uint8>(comp_data.companion_type));
+	auto* new_comp = new Companion(npc_type_data,
+	                               corpse_pos.x, corpse_pos.y, corpse_pos.z, corpse_pos.w,
+	                               owner_char_id, static_cast<uint8>(comp_data.companion_type));
 
-	// Apply saved data
+	// Apply companion identity fields before Load() so that Load() has the correct
+	// companion_id to query (Load() re-fetches the DB row internally to restore state).
 	new_comp->SetCompanionID(companion_id);
 	new_comp->SetOwnerCharacterID(owner_char_id);
-	new_comp->SetRecruitedNPCTypeID(comp_data.npc_type_id);
-	new_comp->SetRecruitedLevel(static_cast<uint8>(comp_data.recruited_level));
-	new_comp->SetStance(static_cast<uint8>(comp_data.stance));
-	new_comp->SetSuspended(false);
-	new_comp->SetDismissed(false);
 
-	// Add to zone entity list
-	entity_list.AddNPC(new_comp);
+	// Load DB state: stance, HP, mana, XP, equipment, stats scaling.
+	// Pattern from SpawnCompanionsOnZone(). Must happen before Spawn() so that
+	// companion state is restored before name normalization and entity registration.
+	if (!new_comp->Load(companion_id)) {
+		LogError("Companion::ResurrectFromCorpse: Load() failed for companion_id=[{}] — aborting rez",
+		         companion_id);
+		delete new_comp;
+		corpse->IsRezzed(false); // reset race guard so next tick can retry
+		return;
+	}
 
-	// Load companion spells and equipment
-	new_comp->AI_Start();
-	new_comp->Load(companion_id);
-	new_comp->LoadEquipment();
-	new_comp->CalcBonuses();
+	// Spawn() normalizes name, calls AddCompanion (companion_list + mob_list),
+	// starts AI, strips immunities, and joins the owner's group.
+	if (!new_comp->Spawn(owner)) {
+		LogError("Companion::ResurrectFromCorpse: Spawn() failed for companion_id=[{}] — aborting rez",
+		         companion_id);
+		delete new_comp;
+		corpse->IsRezzed(false); // reset race guard so next tick can retry
+		return;
+	}
 
-	// Scale stats to the saved level
-	uint8 scale_level = static_cast<uint8>(comp_data.level > 0 ? comp_data.level : npc_type_data->level);
-	new_comp->ScaleStatsToLevel(scale_level);
+	// Spawn() + group-join confirmed — now commit the DB UPDATE and depop the corpse.
+	// Fix C: these two operations are deferred to here so that failure before this
+	// point leaves the corpse intact and DB unchanged (retryable by next Cleric tick).
+	comp_data.is_suspended  = 0;
+	comp_data.cur_hp        = 0; // will be set to rez % of max below
+	comp_data.experience   += xp_restore;
+	CompanionDataRepository::UpdateOne(database, comp_data);
 
-	// Post-rez stats: low HP based on the rez spell's value (10% of max HP minimum)
-	// For 90% rez → companion spawns with 90% * (90%/100) HP = ~81% base
-	// But per PRD: HP is set to a percentage of max HP based on the rez spell
-	// We use rez_pct directly as an HP fraction (same as EQ player rez behavior)
+	corpse->DepopNPCCorpse();
+
+	// Post-rez stats: HP based on the rez spell's restoration percentage.
+	// Apply AFTER Spawn() + Load() so ScaleStatsToLevel has set the correct max HP.
+	// 0% rez (Revive) spawns at 10% HP (Reanimation-equivalent).
 	int64 max_hp = new_comp->GetMaxHP();
 	int64 rez_hp = max_hp;
 	if (xp_restore_pct > 0) {
 		rez_hp = (max_hp * static_cast<int64>(xp_restore_pct)) / 100;
 	} else {
-		// 0% rez (Revive) — spawn at 10% HP
-		rez_hp = max_hp / 10;
+		rez_hp = max_hp / 10; // 0% rez (Revive) — spawn at 10% HP
 	}
 	rez_hp = std::max(rez_hp, static_cast<int64>(1));
 	new_comp->SetHP(rez_hp);
-	new_comp->SetMana(0); // Post-rez: 0 mana
-	new_comp->BuffFadeAll(); // Strip all buffs
+	new_comp->SetMana(0);
+	new_comp->BuffFadeAll();
 
-	// Restore XP in the new entity (experience field is already updated with xp_restore above)
+	// Sync in-memory XP with the DB-updated value
 	new_comp->m_companion_xp = static_cast<uint32>(comp_data.experience);
-
-	// Join owner's group and resume following
-	new_comp->CompanionJoinClientGroup();
 
 	// Announce rez to group
 	const char* dead_name   = comp_data.name.c_str();
 	const char* caster_name = caster ? caster->GetCleanName() : "unknown";
 
-	// Determine whether to use "resurrected" or "raised" (necromancer uses "raised")
 	bool is_necro_rez = caster && caster->IsCompanion() && caster->GetClass() == Class::Necromancer;
 	if (is_necro_rez) {
-		CompanionGroupSay(nullptr,
-			"%s has been raised by %s.", dead_name, caster_name);
+		CompanionGroupSay(nullptr, "%s has been raised by %s.", dead_name, caster_name);
 	} else {
-		CompanionGroupSay(nullptr,
-			"%s has been resurrected by %s.", dead_name, caster_name);
+		CompanionGroupSay(nullptr, "%s has been resurrected by %s.", dead_name, caster_name);
 	}
 
 	LogInfo("Companion [{}] (id={}) resurrected at ({:.1f},{:.1f},{:.1f}) by [{}], HP={}/{}, XP restored={}",

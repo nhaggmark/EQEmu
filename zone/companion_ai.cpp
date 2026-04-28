@@ -1934,6 +1934,15 @@ static const char* GetRezMeditationLine(uint8 class_id)
 
 bool Companion::AI_ResurrectDeadGroupMember()
 {
+	// Fix R4 (BUG-001 V2): dead Cleric self-rez guard.  A dead entity with residual
+	// mana (HP→0 before mana→0 from a single big hit) can reach this function because
+	// Companion::Process() continues to call NPC::Process() → AI_Process() →
+	// AI_IdleCastCheck() even at HP=0.  Block unconditionally so a dead caster never
+	// attempts to rez its own corpse regardless of mana state.
+	if (GetHP() <= 0) {
+		return false;
+	}
+
 	if (!RuleB(Companions, RezEnabled)) {
 		return false;
 	}
@@ -1947,6 +1956,22 @@ bool Companion::AI_ResurrectDeadGroupMember()
 	if (m_rez_delay_timer.Enabled()) {
 		// Timer is still counting down — not ready yet
 		return false;
+	}
+
+	// Fix C Option D (BUG-001 V2): pre-flight group-capacity check before any
+	// state mutation.  Fix A (clearing dead companion's membername[] slot at death)
+	// normally ensures the group has a free slot by the time rez fires.  This check
+	// is defense-in-depth: if the group is somehow still full (e.g., Fix A hasn't
+	// landed for an existing dead slot, or a rare race), abort before selecting a
+	// spell or acquiring the corpse so no state changes occur.
+	{
+		Client* rez_owner = GetCompanionOwner();
+		if (rez_owner) {
+			Group* rez_group = entity_list.GetGroupByClient(rez_owner);
+			if (rez_group && rez_group->GroupCount() >= MAX_GROUP_MEMBERS) {
+				return false;
+			}
+		}
 	}
 
 	// Task 12: multi-healer coordination — don't pile on if another companion

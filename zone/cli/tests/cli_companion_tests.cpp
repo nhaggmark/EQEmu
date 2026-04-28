@@ -7983,11 +7983,17 @@ inline void TestCompanionV2RezPipelineFix()
 			if (!companion) {
 				SkipTest("V2Rez > 36.1 MemberZoned name slot cleared by Fix A (structural)", "CreateTestCompanion failed");
 			} else {
-				// Build a Group with the companion as leader so membername[0] contains its name.
-				// Group(Mob*) stores GetName() in membername[0] and sets members[0]=companion.
+				// Build a Group with the companion as leader.
+				// Group(Mob*) stores GetName() in membername[0] but AddMember() stores GetCleanName().
+				// We simulate the post-AddMember state by overwriting membername[0] with GetCleanName(),
+				// which is what AddMember() would have stored (groups.cpp:260).
 				Group* g = new Group(companion);
 				entity_list.AddGroup(g);
 				companion->SetGrouped(true);
+
+				// Override membername[0] with GetCleanName() to simulate the AddMember() state
+				strncpy(g->membername[0], companion->GetCleanName(), 63);
+				g->membername[0][63] = '\0';
 
 				// Verify the name slot is occupied before MemberZoned
 				std::string slot0_before(g->membername[0]);
