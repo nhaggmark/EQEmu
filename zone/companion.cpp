@@ -1925,14 +1925,15 @@ bool Companion::Process()
 		database.QueryDatabase(safety_query);
 	}
 
-	// Fix R4 (BUG-001 V2): skip ALL companion AI for dead entities.  NPC::Process() is
-	// still called so the despawn timer and standard NPC cleanup (p_depop flag) continues
-	// to function.  This prevents dead companions from entering the AI dispatch path in
-	// NPC::Process() → Mob::AI_Process() → AI_IdleCastCheck(), which can trigger rez
-	// attempts, buff casts, or movement on a dead entity.
-	if (GetHP() <= 0) {
-		return NPC::Process();
-	}
+	// Fix V Option A (BUG-002 / BUG-005): capture dead state once.
+	// The heartbeat block (m_ping_timer) and death despawn timer block must run
+	// unconditionally for dead companions so:
+	//   (a) the Titanium client keeps the entity rendered (BUG-002), and
+	//   (b) the auto-dismiss timer fires after DeathDespawnS seconds (BUG-005).
+	// Only AI-dispatch sections (stance scanning, combat positioning, etc.) are
+	// skipped when dead — same intent as prior Fix R4, just applied surgically
+	// rather than as a blanket early-return.
+	const bool is_dead = (GetHP() <= 0);
 
 	// Check death despawn timer
 	if (m_death_despawn_timer.Enabled() && m_death_despawn_timer.Check()) {
@@ -1963,6 +1964,9 @@ bool Companion::Process()
 		return false;
 	}
 
+	Client* owner = GetCompanionOwner();
+
+	if (!is_dead) {
 	// Rez delay timer: track engaged-to-idle transition and start the post-combat
 	// settling window before healer companions attempt resurrection.
 	bool currently_engaged = IsEngaged();
@@ -2003,8 +2007,6 @@ bool Companion::Process()
 	} else {
 		SetSpecialAbility(SpecialAbility::FleeingImmunity, 0);
 	}
-
-	Client* owner = GetCompanionOwner();
 
 	// PASSIVE STANCE: disengage from all combat, never assist
 	if (m_current_stance == COMPANION_STANCE_PASSIVE) {
@@ -2124,6 +2126,7 @@ bool Companion::Process()
 			}
 		}
 	}
+	} // end if (!is_dead) — AI dispatch sections
 
 	// Keep-alive position packet: the Titanium client culls (stops rendering) entities
 	// that have not sent a position update for ~5 seconds.  When a companion is
@@ -2141,6 +2144,7 @@ bool Companion::Process()
 		}
 	}
 
+	if (!is_dead) {
 	// Sit when owner sits (med/rest synchronization).
 	// Only when out of combat and the companion is not moving.
 	// Casters/healers sit to regen mana; all companions sit to show idle state.
@@ -2250,6 +2254,7 @@ bool Companion::Process()
 			}
 		}
 	}
+	} // end if (!is_dead) — AI dispatch sections
 
 	bool npc_result = NPC::Process();
 	if (!npc_result) {
