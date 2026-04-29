@@ -8224,6 +8224,163 @@ inline void TestCompanionV2RezPipelineFix()
 	std::cout << "--- Suite 36 Complete ---\n";
 }
 
+// ============================================================
+// Suite 37: V3R — BUG-002/005 (heartbeat + despawn) + BUG-004 (AoE filter)
+//
+// Three TDD tests for V3R. V.1 and V.2 FAIL pre-fix and PASS post-fix.
+// W.1 tests Fix W structural prerequisites that are already correct, plus
+// verifies the NPC-vs-companion path (Fix W only affects the client-vs-NPC
+// branch, which requires a real Client object unavailable in unit tests;
+// the behavioral client assertion is delegated to in-game V3R.6).
+//
+//   V.1 heartbeat-for-dead: when HP=0, the ping timer should start
+//       so the Titanium client keeps the companion rendered.
+//       Pre-fix FAILS: Fix R4 early-return at companion.cpp:1933 skips
+//       the heartbeat block; m_ping_timer stays disabled.
+//       Post-fix PASSES: heartbeat block runs unconditionally.
+//
+//   V.2 despawn-timer-for-dead: when HP=0 and the death despawn timer
+//       fires, Process() should return false (companion auto-dismissed).
+//       Pre-fix FAILS: Fix R4 early-return skips the despawn timer check;
+//       NPC::Process() returns true; companion is never dismissed.
+//       Post-fix PASSES: despawn timer block runs unconditionally.
+//
+//   W.1 aoe-excludes-owner-companion structural prerequisites:
+//       Verifies IsCompanion()==true, GetOwnerID()==0 (confirms _NPC macro
+//       applies), and GetOwnerCharacterID() returns the owner char ID.
+//       These are the exact pre-conditions Fix W α guards on.
+//       Note: the client-vs-companion behavioral assertion (that
+//       IsAttackAllowed returns false when a Client attacks its companion)
+//       requires a real Client object and is delegated to in-game V3R.6.
+// ============================================================
+
+inline void TestCompanionV3RBugFixes()
+{
+	std::cout << "\n--- Suite 37: V3R Bug Fixes (BUG-002/005/004) ---\n";
+
+	// --------------------------------------------------------
+	// V.1: Heartbeat ping timer enabled for dead companions
+	//
+	// When GetHP() == 0 and companion is not moving, the ping timer
+	// should start after one Process() tick.
+	// Pre-fix FAILS: Fix R4 early-return bypasses the heartbeat block.
+	// Post-fix PASSES: heartbeat block is unconditional.
+	// --------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 40, 0);
+		if (!comp) {
+			SkipTest("V3R > V.1 Ping timer enabled for dead companion", "No warrior NPC near level 40");
+		} else {
+			// Ping timer starts disabled per constructor
+			RunTest("V3R > V.1 pre: ping timer disabled before any Process() tick",
+				false, comp->IsPingTimerEnabled());
+
+			// Drop HP to 0 (dead state simulates post-Death() before despawn)
+			comp->SetHP(0);
+			RunTest("V3R > V.1 pre: GetHP() == 0", 0, static_cast<int>(comp->GetHP()));
+
+			// Process() tick — heartbeat block should run regardless of HP.
+			// Pre-fix (Fix R4 at companion.cpp:1933): early-return to NPC::Process();
+			// heartbeat block is never reached; ping timer stays disabled.
+			// Post-fix (Fix V Option A): heartbeat block is unconditional;
+			// ping timer starts because IsMoving()==false.
+			comp->Process();
+
+			RunTest("V3R > V.1 Ping timer enabled after Process() with HP=0 (BUG-002 fix)",
+				true, comp->IsPingTimerEnabled());
+		}
+	}
+	CleanupTestCompanions();
+
+	// --------------------------------------------------------
+	// V.2: Death despawn timer fires for dead companions
+	//
+	// When GetHP() == 0 and the death despawn timer fires,
+	// Process() must return false (companion auto-dismissed = BUG-005 fix).
+	// Pre-fix FAILS: Fix R4 early-return skips the despawn timer check;
+	// NPC::Process() returns true; companion is never auto-dismissed.
+	// Post-fix PASSES: despawn timer block is unconditional.
+	// --------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 40, 0);
+		if (!comp) {
+			SkipTest("V3R > V.2 Despawn timer fires for dead companion", "No warrior NPC near level 40");
+		} else {
+			// Dead state
+			comp->SetHP(0);
+			comp->SetSuspended(false);
+
+			// TriggerDeathDespawnTimer() enables + sets start_time so Check() fires immediately.
+			// This simulates the DeathDespawnS rule window having elapsed.
+			comp->TriggerDeathDespawnTimer();
+
+			RunTest("V3R > V.2 pre: death despawn timer enabled after Trigger()",
+				true, comp->IsDeathDespawnTimerEnabled());
+
+			// Pre-fix: Fix R4 returns NPC::Process() before reaching despawn check.
+			// NPC::Process() returns true (entity not depop'd). Test expects false → FAIL.
+			// Post-fix: despawn timer block is unconditional; Process() returns false.
+			bool process_result = comp->Process();
+
+			RunTest("V3R > V.2 Process() returns false when dead + despawn timer fired (BUG-005 fix)",
+				false, process_result);
+		}
+	}
+	CleanupTestCompanions();
+
+	// --------------------------------------------------------
+	// W.1: Fix W α structural prerequisites (BUG-004)
+	//
+	// Fix W α at aggro.cpp:867 guards on:
+	//   mob2->IsCompanion() == true
+	//   mob2->CastToNPC()->CastToCompanion()->GetOwnerCharacterID() != 0
+	//   mob1->IsClient() == true  (client is the AoE caster)
+	//
+	// The companion satisfies the first two. The third (Client attacker)
+	// cannot be tested via unit tests — requires in-game validation (V3R.6).
+	// This test verifies the observable prerequisites so the fix can key
+	// off them correctly, and confirms the NPC-vs-companion path is
+	// correctly classified (this path is NOT changed by Fix W, which only
+	// affects the client-vs-NPC branch).
+	// --------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 40, 12345);  // owner_char_id=12345
+
+		if (!comp) {
+			SkipTest("V3R > W.1 Fix W prerequisites", "No warrior NPC near level 40");
+		} else {
+			// Prerequisite 1: companion correctly identified as companion and NPC
+			RunTest("V3R > W.1 IsCompanion() == true (Fix W guard pre-condition)",
+				true, comp->IsCompanion());
+			RunTest("V3R > W.1 IsNPC() == true", true, comp->IsNPC());
+
+			// Prerequisite 2: GetOwnerID() == 0 confirms _NPC(comp) macro is true
+			// (companion never calls SetOwnerID(); uses custom m_owner_char_id instead)
+			RunTest("V3R > W.1 GetOwnerID() == 0 (_NPC macro applies; companion enters client-vs-NPC branch)",
+				0, static_cast<int>(comp->GetOwnerID()));
+
+			// Prerequisite 3: GetOwnerCharacterID() returns the set owner (Fix W keying value)
+			RunTest("V3R > W.1 GetOwnerCharacterID() == 12345 (Fix W can match owner)",
+				12345, static_cast<int>(comp->GetOwnerCharacterID()));
+
+			// Regression guard: Companion::IsAttackAllowed override correctly blocks
+			// same-owner companion targeting (BUG-035 Layer 2 — already working pre-fix).
+			// This confirms the override is intact and Fix W does not regress it.
+			Companion* comp2 = CreateTestCompanionByClass(1, 40, 12345); // same owner
+			if (comp2) {
+				bool same_owner_result = comp2->IsAttackAllowed(comp);
+				RunTest("V3R > W.1 regression: companion does not attack same-owner companion",
+					false, same_owner_result);
+			} else {
+				SkipTest("V3R > W.1 regression: same-owner attack guard", "No second warrior NPC found");
+			}
+		}
+	}
+	CleanupTestCompanions();
+
+	std::cout << "--- Suite 37 Complete ---\n";
+}
+
 void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::string &description)
 {
 	description = "Run companion system integration tests";
@@ -8347,6 +8504,9 @@ void ZoneCLI::TestCompanion(int argc, char **argv, argh::parser &cmd, std::strin
 	CleanupTestCompanions();
 
 	TestCompanionV2RezPipelineFix();
+	CleanupTestCompanions();
+
+	TestCompanionV3RBugFixes();
 	CleanupTestCompanions();
 
 	// Final DB cleanup
