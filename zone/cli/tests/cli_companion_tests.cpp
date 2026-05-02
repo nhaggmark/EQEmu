@@ -8378,6 +8378,42 @@ inline void TestCompanionV3RBugFixes()
 	}
 	CleanupTestCompanions();
 
+	// --------------------------------------------------------
+	// V.3: Heartbeat ping timer fires for alive-passive companions
+	//
+	// BUG-002 fix-iteration: the original heartbeat placement was AFTER the
+	// passive-stance early-return, so passive companions NEVER received the
+	// heartbeat even when alive. This was a pre-existing gap missed by the
+	// original architect analysis (which only diagnosed the dead-entity case).
+	//
+	// Pre-fix FAILS: passive early-return at companion.cpp line ~2038 exits
+	// Process() before the heartbeat block is reached; ping timer stays disabled.
+	// Post-fix PASSES: heartbeat block hoisted above all early-returns so it
+	// runs unconditionally for every alive companion tick.
+	// --------------------------------------------------------
+	{
+		Companion* comp = CreateTestCompanionByClass(1, 40, 0);
+		if (!comp) {
+			SkipTest("V3R > V.3 Ping timer fires for alive-passive companion", "No warrior NPC near level 40");
+		} else {
+			// Alive (HP > 0), not moving, in PASSIVE stance
+			RunTest("V3R > V.3 pre: GetHP() > 0 (alive)", true, comp->GetHP() > 0);
+			comp->SetStance(COMPANION_STANCE_PASSIVE);
+			RunTest("V3R > V.3 pre: stance is PASSIVE", COMPANION_STANCE_PASSIVE, static_cast<int>(comp->GetStance()));
+			RunTest("V3R > V.3 pre: ping timer disabled before any Process() tick",
+				false, comp->IsPingTimerEnabled());
+
+			// Process() tick — heartbeat must run regardless of passive stance.
+			// Pre-fix: passive block hits return NPC::Process(); heartbeat never reached.
+			// Post-fix: heartbeat hoisted above all early-returns; fires for every alive tick.
+			comp->Process();
+
+			RunTest("V3R > V.3 Ping timer enabled after Process() for alive-passive companion (BUG-002 fix-iteration)",
+				true, comp->IsPingTimerEnabled());
+		}
+	}
+	CleanupTestCompanions();
+
 	std::cout << "--- Suite 37 Complete ---\n";
 }
 
