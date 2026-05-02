@@ -1925,6 +1925,26 @@ bool Companion::Process()
 		database.QueryDatabase(safety_query);
 	}
 
+	// INVARIANT: heartbeat MUST run unconditionally for every alive companion tick,
+	// regardless of stance or state. Do NOT move this back inside any stance branch
+	// or below any early-return. See bugs/BUG-002 and feedback_refactor_regression_discipline.md.
+	//
+	// Keep-alive position packet: the Titanium client culls (stops rendering) entities
+	// that have not sent a position update for ~5 seconds. When a companion is
+	// stationary (holding position or following without moving), send a zero-delta
+	// position packet on a 5-second timer so the client keeps the entity visible.
+	// This mirrors the same pattern used by Bot::Process() (bot.cpp ~line 1737-1748).
+	if (IsMoving()) {
+		m_ping_timer.Disable();
+	} else {
+		if (!m_ping_timer.Enabled()) {
+			m_ping_timer.Start(5000);
+		}
+		if (m_ping_timer.Check()) {
+			SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0);
+		}
+	}
+
 	// Fix V Option A (BUG-002 / BUG-005): capture dead state once.
 	// The heartbeat block (m_ping_timer) and death despawn timer block must run
 	// unconditionally for dead companions so:
@@ -2127,22 +2147,6 @@ bool Companion::Process()
 		}
 	}
 	} // end if (!is_dead) — AI dispatch sections
-
-	// Keep-alive position packet: the Titanium client culls (stops rendering) entities
-	// that have not sent a position update for ~5 seconds.  When a companion is
-	// stationary (holding position or following without moving), send a zero-delta
-	// position packet on a 5-second timer so the client keeps the entity visible.
-	// This mirrors the same pattern used by Bot::Process() (bot.cpp ~line 1737-1748).
-	if (IsMoving()) {
-		m_ping_timer.Disable();
-	} else {
-		if (!m_ping_timer.Enabled()) {
-			m_ping_timer.Start(5000);
-		}
-		if (m_ping_timer.Check()) {
-			SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0);
-		}
-	}
 
 	if (!is_dead) {
 	// Sit when owner sits (med/rest synchronization).
