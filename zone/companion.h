@@ -513,6 +513,12 @@ public:
 	bool     IsSitting() const override;
 	bool     IsStanding() const;
 
+	// Test hooks — expose timer state for TDD suites
+	bool     IsDeathDespawnTimerEnabled()  { return m_death_despawn_timer.Enabled(); }
+	void     TriggerDeathDespawnTimer()    { m_death_despawn_timer.Trigger(); }
+	bool     IsPingTimerEnabled()          { return m_ping_timer.Enabled(); }
+	void     TriggerPingTimer()            { m_ping_timer.Trigger(); }
+
 protected:
 	// Spell AI storage
 	std::vector<CompanionSpell> m_companion_spells;

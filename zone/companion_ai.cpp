@@ -1865,12 +1865,20 @@ Corpse* Companion::FindDeadGroupMemberCorpse()
 		return nullptr;
 	}
 
-	// Only search within RezRange
 	int rez_range = RuleI(Companions, RezRange);
 
-	// We look for any companion corpse owned by this owner's character ID
-	// (each player can have one companion; if two companions are dead, we find
-	// the closest one — extension to multi-companion groups can sort by priority later)
+	// Priority 1: the owner's player corpse if in range and not yet rezzed.
+	// Player rez is highest priority — the player cannot keep playing without it.
+	// GetCorpseByOwnerWithinRange compares DistanceSquaredNoZ against the range argument
+	// directly (no squaring inside the function), so pass rez_range*rez_range for a
+	// correct distance check matching GetCompanionCorpseByOwnerWithinRange's convention.
+	Corpse* player_corpse = entity_list.GetCorpseByOwnerWithinRange(
+		owner, this, rez_range * rez_range);
+	if (player_corpse && !player_corpse->IsRezzed()) {
+		return player_corpse;
+	}
+
+	// Priority 2: closest companion corpse owned by this owner.
 	return entity_list.GetCompanionCorpseByOwnerWithinRange(
 		owner->CharacterID(), this, rez_range);
 }
@@ -1926,6 +1934,15 @@ static const char* GetRezMeditationLine(uint8 class_id)
 
 bool Companion::AI_ResurrectDeadGroupMember()
 {
+	// Fix R4 (BUG-001 V2): dead Cleric self-rez guard.  A dead entity with residual
+	// mana (HP→0 before mana→0 from a single big hit) can reach this function because
+	// Companion::Process() continues to call NPC::Process() → AI_Process() →
+	// AI_IdleCastCheck() even at HP=0.  Block unconditionally so a dead caster never
+	// attempts to rez its own corpse regardless of mana state.
+	if (GetHP() <= 0) {
+		return false;
+	}
+
 	if (!RuleB(Companions, RezEnabled)) {
 		return false;
 	}
@@ -1939,6 +1956,22 @@ bool Companion::AI_ResurrectDeadGroupMember()
 	if (m_rez_delay_timer.Enabled()) {
 		// Timer is still counting down — not ready yet
 		return false;
+	}
+
+	// Fix C Option D (BUG-001 V2): pre-flight group-capacity check before any
+	// state mutation.  Fix A (clearing dead companion's membername[] slot at death)
+	// normally ensures the group has a free slot by the time rez fires.  This check
+	// is defense-in-depth: if the group is somehow still full (e.g., Fix A hasn't
+	// landed for an existing dead slot, or a rare race), abort before selecting a
+	// spell or acquiring the corpse so no state changes occur.
+	{
+		Client* rez_owner = GetCompanionOwner();
+		if (rez_owner) {
+			Group* rez_group = entity_list.GetGroupByClient(rez_owner);
+			if (rez_group && rez_group->GroupCount() >= MAX_GROUP_MEMBERS) {
+				return false;
+			}
+		}
 	}
 
 	// Task 12: multi-healer coordination — don't pile on if another companion

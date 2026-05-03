@@ -22,6 +22,7 @@
 #include "common/spdat.h"
 #include "zone/bot.h"
 #include "zone/client.h"
+#include "zone/companion.h"
 #include "zone/entity.h"
 #include "zone/map.h"
 #include "zone/mob.h"
@@ -866,6 +867,21 @@ bool Mob::IsAttackAllowed(Mob *target, bool isSpellAttack)
 			}
 			else if(_NPC(mob2))				// client vs npc
 			{
+				// Fix W α (BUG-004): client must not AoE-hit its own companion or a
+				// group member's companion. Companions use m_owner_char_id instead of
+				// SetOwnerID(), so _NPC(mob2) is true for them; this guard corrects that.
+				if (mob2->IsCompanion() &&
+				    mob2->CastToNPC()->CastToCompanion()->GetOwnerCharacterID() != 0) {
+					auto* c = mob1->CastToClient();
+					Companion* comp = mob2->CastToNPC()->CastToCompanion();
+					if (comp->GetOwnerCharacterID() == c->CharacterID()) {
+						return false; // owner's own companion
+					}
+					auto* grp = c->GetGroup();
+					if (grp && grp->IsGroupMember(mob2)) {
+						return false; // companion of a group member
+					}
+				}
 				return true;
 			}
 			else if(_BECOMENPC(mob2))	// client vs becomenpc
