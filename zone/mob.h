@@ -1756,6 +1756,7 @@ protected:
 	uint32 casting_spell_aa_id;
 	uint32 casting_spell_recast_adjust;
 	bool casting_spell_checks;
+	bool m_summon_corpse_was_noop{false};
 	uint16 bardsong;
 	EQ::spells::CastingSlot bardsong_slot;
 	uint32 bardsong_target_id;
