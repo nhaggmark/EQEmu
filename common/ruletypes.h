@@ -546,6 +546,7 @@ RULE_INT(Spells, PointBlankAOEMaxTargets, 0, "Max number of targets a Point-Blan
 RULE_INT(Spells, DefaultAOEMaxTargets, 0, "Max number of targets that an AOE spell which does not meet other descriptions can cast on. Set to 0 for no limit.")
 RULE_BOOL(Spells, AllowFocusOnSkillDamageSpells, false, "Allow focus effects 185, 459, and 482 to enhance SkillAttack spell effect 193")
 RULE_STRING(Spells, AlwaysStackSpells, "", "Comma-Seperated list of spell IDs to always stack with every other spell, except themselves.")
+RULE_INT(Spells, UniversalSummonCorpseCooldown, 180, "Cooldown in seconds for the universal self-summon-corpse spell line (12 class-flavored level-1 spells). 0 disables the cooldown. Default 180 (3 minutes). Range: 0-3600. Hot-reloadable via #reloadrules.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Combat)
