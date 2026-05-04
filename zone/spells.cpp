@@ -2816,6 +2816,21 @@ bool Mob::SpellFinished(uint16 spell_id, Mob *spell_target, CastingSlot slot, in
 			LogSpells("Spell [{}]: Setting custom reuse timer [{}] to [{}]", spell_id, casting_spell_timer, casting_spell_timer_duration);
 		} else if (spells[spell_id].recast_time > 1000 && !spells[spell_id].is_discipline) {
 			int recast = spells[spell_id].recast_time/1000;
+
+			// Universal Summon Corpse spell line: apply rule-driven cooldown override and
+			// skip the timer entirely if the cast was a no-op (no corpse in zone).
+			static const int kUniversalSummonCorpseCategory = 221;
+			if (spells[spell_id].spell_category == kUniversalSummonCorpseCategory) {
+				int rule_cd = RuleI(Spells, UniversalSummonCorpseCooldown);
+				if (rule_cd >= 0) {
+					recast = rule_cd;
+				}
+				if (m_summon_corpse_was_noop) {
+					m_summon_corpse_was_noop = false;
+					recast = 0;
+				}
+			}
+
 			if (spell_id == SPELL_LAY_ON_HANDS)	{ //lay on hands
 				recast -= GetAA(aaFervrentBlessing) * 420;
 			} else if (IsHarmTouchSpell(spell_id)) { //harm touch

@@ -1849,6 +1849,9 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 							else {
 								// No corpse found in the zone
 								MessageString(Chat::LightBlue, CORPSE_CANT_SENSE);
+								if (TargetClient == CastToClient()) {
+									m_summon_corpse_was_noop = true;
+								}
 							}
 						}
 						else if (caster) {
