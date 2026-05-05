@@ -615,6 +615,9 @@ bool Companion::Death(Mob* killer_mob, int64 damage, uint16 spell_id,
 	// Records loss in m_xp_lost_on_death for use by ResurrectFromCorpse().
 	ApplyDeathXPPenalty();
 
+	// Movement-control gate: clear resist counters so they don't persist across death/rez.
+	ClearMovementControlResistCounters();
+
 	// Let the base NPC death handling run first (creates corpse, etc.)
 	bool result = NPC::Death(killer_mob, damage, spell_id, attack_skill, killed_by, is_buff_tic);
 
@@ -1996,6 +1999,8 @@ bool Companion::Process()
 			m_rez_delay_timer.Start(RuleI(Companions, RezPostCombatDelayS) * 1000);
 			m_rez_meditation_announced = false;
 		}
+		// Movement-control gate: clear per-target resist counters on engagement end.
+		ClearMovementControlResistCounters();
 	}
 	m_was_engaged = currently_engaged;
 
@@ -2529,6 +2534,10 @@ bool Companion::Unsuspend(bool set_max_stats)
 
 	SetSuspended(false);
 	LoadBuffs();
+
+	// Movement-control gate: clear counters so a freshly unsuspended companion
+	// doesn't inherit stale resist state from a previous engagement.
+	ClearMovementControlResistCounters();
 
 	if (CompanionJoinClientGroup()) {
 		if (set_max_stats) {

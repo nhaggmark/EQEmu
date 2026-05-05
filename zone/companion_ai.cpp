@@ -869,6 +869,121 @@ bool Companion::AI_SlowDebuff(Mob* target)
 }
 
 // ============================================================
+// AI_AttemptMovementControl — shared snare/root gate
+//
+// PRD requirements:
+//   * Out-of-combat: gate does not apply, cast normally
+//   * In-combat: target HP <= Companions:SnareHpThreshold AND
+//     target IsFleeing(). Both required.
+//   * Per-(companion, target) full-resist counter, cap at
+//     Companions:SnareResistLimit. Cleared on engagement-end
+//     and target change.
+//   * No chat spam on suppression.
+//
+// spell_type_mask: SpellType_Snare, SpellType_Root, or both.
+// Returns true if a cast was attempted, false otherwise.
+// ============================================================
+bool Companion::AI_AttemptMovementControl(Mob* target, uint32 spell_type_mask)
+{
+	if (!target || target->GetHP() <= 0) {
+		return false;
+	}
+
+	// Pre-existing redundancy guards preserved from original inline branches.
+	if (spell_type_mask & SpellType_Snare) {
+		if (target->GetSpecialAbility(SpecialAbility::SnareImmunity)) {
+			return false;
+		}
+		if (target->GetSnaredAmount() >= 0) {
+			return false;
+		}
+	}
+	if ((spell_type_mask & SpellType_Root) && target->IsRooted()) {
+		return false;
+	}
+
+	uint32 now_ms = Timer::GetCurrentTime();
+	uint16 cast_spell = SelectFirstSpell(
+		m_companion_spells, spell_type_mask, m_current_stance, now_ms);
+	if (!cast_spell) {
+		return false;
+	}
+
+	// Target-change detection: clear all counters when switching targets.
+	uint16 tid = target->GetID();
+	if (tid != m_last_movement_control_target_id) {
+		m_movement_control_resist_counts.clear();
+		m_last_movement_control_target_id = tid;
+	}
+
+	// ---------------- THE GATE ----------------
+	if (IsEngaged()) {
+		const int hp_threshold = RuleI(Companions, SnareHpThreshold);
+		const int target_hpr   = static_cast<int>(target->GetHPRatio());
+		const bool fleeing     = target->IsFleeing();
+
+		if (target_hpr > hp_threshold || !fleeing) {
+			return false;
+		}
+
+		const int resist_limit = RuleI(Companions, SnareResistLimit);
+		if (resist_limit > 0) {
+			auto it = m_movement_control_resist_counts.find(tid);
+			if (it != m_movement_control_resist_counts.end() &&
+			    it->second >= static_cast<uint8>(resist_limit)) {
+				return false;
+			}
+		}
+	}
+	// ------------------------------------------
+
+	bool cast_ok = AIDoSpellCast(cast_spell, target, spells[cast_spell].mana);
+	if (cast_ok) {
+		SetSpellTimeCanCast(cast_spell, spells[cast_spell].recast_time);
+	}
+	return cast_ok;
+}
+
+// ============================================================
+// OnSpellResisted — called from Mob::SpellOnTarget on full
+// resist. Counts SpellType_Snare and SpellType_Root resists
+// only. All other resists are ignored.
+// ============================================================
+void Companion::OnSpellResisted(uint16 spell_id, Mob* target)
+{
+	if (!target) {
+		return;
+	}
+
+	bool is_movement_control = false;
+	for (const auto& cs : m_companion_spells) {
+		if (cs.spellid == spell_id &&
+		    (cs.type & (SpellType_Snare | SpellType_Root))) {
+			is_movement_control = true;
+			break;
+		}
+	}
+	if (!is_movement_control) {
+		return;
+	}
+
+	uint16 tid = target->GetID();
+	uint8& count = m_movement_control_resist_counts[tid];
+	if (count < 255) {
+		++count;
+	}
+
+	LogAIDetail("Companion [{}] OnSpellResisted: movement-control spell [{}] on target [{}] (id [{}]) count now [{}]",
+	            GetName(), spell_id, target->GetName(), tid, count);
+}
+
+void Companion::ClearMovementControlResistCounters()
+{
+	m_movement_control_resist_counts.clear();
+	m_last_movement_control_target_id = 0;
+}
+
+// ============================================================
 // AI_MezTarget — mez a secondary target to reduce mob count
 // ============================================================
 bool Companion::AI_MezTarget()
@@ -1231,17 +1346,11 @@ bool Companion::AI_Druid(uint32 iSpellTypes, bool is_defensive)
 				return true;
 			}
 		}
-		// Root if balanced/aggressive
-		if ((iSpellTypes & SpellType_Root) && m_current_stance != COMPANION_STANCE_PASSIVE) {
-			uint32 now_ms = Timer::GetCurrentTime();
-			uint16 root_spell = SelectFirstSpell(m_companion_spells, SpellType_Root, m_current_stance, now_ms);
-			Mob* target = GetTarget();
-			if (root_spell && target && !target->IsRooted() && zone->random.Roll(30)) {
-				bool cast_ok = AIDoSpellCast(root_spell, target, spells[root_spell].mana);
-				if (cast_ok) {
-					SetSpellTimeCanCast(root_spell, spells[root_spell].recast_time);
-					return true;
-				}
+		// Movement-control: root fleeing low-HP enemies — gated by Companions:SnareHpThreshold and IsFleeing.
+		if ((iSpellTypes & SpellType_Root) && m_current_stance != COMPANION_STANCE_PASSIVE
+		    && zone->random.Roll(30)) {
+			if (AI_AttemptMovementControl(GetTarget(), SpellType_Root)) {
+				return true;
 			}
 		}
 		// DoT (flame lick, drones of doom)
@@ -1465,20 +1574,10 @@ bool Companion::AI_Ranger(uint32 iSpellTypes, bool is_defensive)
 	bool engaged = IsEngaged();
 
 	if (engaged) {
-		// Snare to prevent fleeing enemies
+		// Movement-control: snare fleeing low-HP enemies — gated.
 		if ((iSpellTypes & SpellType_Snare) && zone->random.Roll(30)) {
-			Mob* target = GetTarget();
-			if (target && !target->GetSpecialAbility(SpecialAbility::SnareImmunity) &&
-			    target->GetSnaredAmount() >= 0) {
-				uint32 now_ms = Timer::GetCurrentTime();
-				uint16 snare_spell = SelectFirstSpell(m_companion_spells, SpellType_Snare, m_current_stance, now_ms);
-				if (snare_spell) {
-					bool cast_ok = AIDoSpellCast(snare_spell, target, spells[snare_spell].mana);
-					if (cast_ok) {
-						SetSpellTimeCanCast(snare_spell, spells[snare_spell].recast_time);
-						return true;
-					}
-				}
+			if (AI_AttemptMovementControl(GetTarget(), SpellType_Snare)) {
+				return true;
 			}
 		}
 		// Nuke (firestrike, flame arrow)
@@ -1785,19 +1884,10 @@ bool Companion::AI_Bard(uint32 iSpellTypes, bool is_defensive)
 				}
 			}
 		}
-		// Snare fleeing targets
+		// Movement-control: snare fleeing targets — gated.
 		if ((iSpellTypes & SpellType_Snare) && zone->random.Roll(20)) {
-			Mob* target = GetTarget();
-			if (target && !target->GetSpecialAbility(SpecialAbility::SnareImmunity)) {
-				uint32 now_ms = Timer::GetCurrentTime();
-				uint16 snare_spell = SelectFirstSpell(m_companion_spells, SpellType_Snare, m_current_stance, now_ms);
-				if (snare_spell) {
-					bool cast_ok = AIDoSpellCast(snare_spell, target, spells[snare_spell].mana);
-					if (cast_ok) {
-						SetSpellTimeCanCast(snare_spell, spells[snare_spell].recast_time);
-						return true;
-					}
-				}
+			if (AI_AttemptMovementControl(GetTarget(), SpellType_Snare)) {
+				return true;
 			}
 		}
 	} else {
