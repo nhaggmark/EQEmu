@@ -83,6 +83,7 @@ Copyright (C) 2001-2002 EQEMu Development Team (http://eqemu.org)
 #include "common/strings.h"
 #include "zone/bot.h"
 #include "zone/client.h"
+#include "zone/companion.h"
 #include "zone/fastmath.h"
 #include "zone/lua_parser.h"
 #include "zone/mob_movement_manager.h"
@@ -4550,6 +4551,10 @@ bool Mob::SpellOnTarget(
 
 				spelltar->CheckNumHitsRemaining(NumHit::IncomingSpells);
 				CheckNumHitsRemaining(NumHit::OutgoingSpells);
+
+				if (IsCompanion()) {
+					CastToCompanion()->OnSpellResisted(spell_id, spelltar);
+				}
 
 				safe_delete(action_packet);
 				return false;

@@ -1253,6 +1253,16 @@ RULE_INT(Companions, RezPostCombatDelayS, 10, "Seconds after combat ends before 
 RULE_INT(Companions, RezRange, 200, "Maximum distance in game units to target a corpse for resurrection")
 RULE_INT(Companions, XPDeathPenaltyPct, 10, "Percentage of current level XP lost when a companion dies")
 RULE_BOOL(Companions, RezWaiveReagents, true, "Waive spell reagent requirements for companion rez casters (NPCs never consume reagents anyway — this rule exists as a future-proof toggle)")
+RULE_INT(Companions, SnareHpThreshold, 25,
+	"Target HP percent at or below which a companion's autonomous AI is allowed to "
+	"cast movement-control spells (snare-line AND root-line). The target must ALSO be "
+	"in flee state (Mob::IsFleeing()). Default 25 aligns with Combat:FleeHPRatio so the "
+	"gate opens exactly when targets enter flee. Set to 100 to disable the HP gate.")
+RULE_INT(Companions, SnareResistLimit, 2,
+	"Consecutive full-resists per (companion, target) at which companion stops "
+	"attempting movement-control casts (snare/root) on that target for the "
+	"engagement. Counter resets on engagement-end and target change. Set to 0 = no cap. "
+	"Default 2.")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

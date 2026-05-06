@@ -21,6 +21,7 @@
 #include "zone/npc.h"
 #include <algorithm>
 #include <string>
+#include <unordered_map>
 
 class Client;
 class Corpse;
@@ -269,6 +270,18 @@ public:
 	bool AI_MezTarget();
 	bool AI_SummonPet();
 	bool AI_InCombatBuff();
+
+	// Shared movement-control attempt with HP-threshold + flee + resist-counter gate.
+	// spell_type_mask should be SpellType_Snare, SpellType_Root, or both OR'd together.
+	// Returns true if a cast was attempted, false if gated/suppressed/no spell available.
+	bool AI_AttemptMovementControl(Mob* target, uint32 spell_type_mask);
+
+	// Resist event hook fired from Mob::SpellOnTarget when this companion's cast is fully
+	// resisted. Increments the per-target counter only for SpellType_Snare/SpellType_Root spells.
+	void OnSpellResisted(uint16 spell_id, Mob* target);
+
+	// Clears all per-target resist counters. Called on engaged->idle transition and target change.
+	void ClearMovementControlResistCounters();
 
 	// Issue #6: Find the best Cannibalize spell (SE_CurrentMana self-spell)
 	// Returns 0 if no suitable spell is found in m_companion_spells.
@@ -598,4 +611,9 @@ private:
 
 	// BUG-034 diagnostic: tracks CalcManaRegen() call count for periodic logging
 	uint32   m_mana_regen_log_counter = 0;
+
+	// Per-(this companion, target_entity_id) consecutive full-resist count for
+	// SpellType_Snare and SpellType_Root casts. Cleared on engagement-end and target change.
+	std::unordered_map<uint16, uint8> m_movement_control_resist_counts;
+	uint16   m_last_movement_control_target_id = 0;
 };
