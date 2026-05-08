@@ -3661,6 +3661,35 @@ void Companion::ResurrectFromCorpse(Corpse* corpse, uint16 spell_id, Mob* caster
 	// Save the corpse position — we need it for spawn location
 	glm::vec4 corpse_pos = corpse->GetPosition();
 
+	// Fix (BUG-001 rez-vanish): depop the OLD dead Companion entity before creating NEW.
+	// Without this, both OLD (dead, m_suspended=true, m_death_despawn_timer running) and
+	// NEW (rezzed) coexist in companion_list with the same m_companion_id. Two failure paths
+	// then corrupt the shared companion_data DB row:
+	//   - OLD's m_death_despawn_timer fires (writes is_dismissed=1, is_suspended=1 to DB)
+	//   - Handle_OP_ZoneChange iterates companion_list and calls Save() on both; if OLD's
+	//     Save() (m_suspended=true) runs last, is_suspended=1 wins → next zone-in skips spawn
+	// Either path causes the rezzed companion to silently vanish on the next zone-in.
+	// Depop(false) removes OLD from companion_list and mob_list, severing both paths.
+	// Save() is intentionally NOT called on OLD here — the correct state will be committed
+	// by the ResurrectFromCorpse UPDATE + NEW's own Save() calls.
+	{
+		Companion* old_dead = nullptr;
+		for (auto& [id, comp] : entity_list.GetCompanionList()) {
+			if (comp
+			    && comp->GetCompanionID() == companion_id
+			    && comp->GetOwnerCharacterID() == owner_char_id) {
+				old_dead = comp;
+				break;
+			}
+		}
+		if (old_dead) {
+			LogInfo("Companion::ResurrectFromCorpse: depopping OLD dead entity "
+			        "(entity_id={}, companion_id={}) before spawning rezzed entity",
+			        old_dead->GetID(), companion_id);
+			old_dead->Depop(false);
+		}
+	}
+
 	// Fix B (BUG-001 V2): Route entity creation through Spawn() instead of AddNPC.
 	// The old path called entity_list.AddNPC() which registered the entity in npc_list
 	// and mob_list but NOT companion_list.  This caused:
